@@ -4,14 +4,13 @@
       v-for="card in publicCards" 
       :key="card.id"
       class="public-card"
-      :class="{ 
+      :class="[getColorClass(card.color), { 
         'selected': card.isSelected,
         'clickable': clickable 
-      }"
+      }]"
       @click="handleCardClick(card)"
     >
       <div class="card-content">
-        <span class="card-color">{{ card.color }}</span>
         <span class="card-number">{{ card.number }}</span>
       </div>
     </div>
@@ -19,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import type { Card } from '@/types/game';
+import type { Card, Color } from '@/types/game';
 
 const props = defineProps<{
   publicCards: Card[];
@@ -29,6 +28,18 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select', card: Card): void;
 }>();
+
+// 获取颜色对应的 CSS 类
+const getColorClass = (color: Color) => {
+  const colorMap: Record<Color, string> = {
+    '红': 'card-red',
+    '蓝': 'card-blue',
+    '绿': 'card-green',
+    '橙': 'card-orange',
+    '粉': 'card-pink'
+  };
+  return colorMap[color];
+};
 
 const handleCardClick = (card: Card) => {
   if (props.clickable) {
@@ -50,12 +61,32 @@ const handleCardClick = (card: Card) => {
   height: 120px;
   border: 2px solid #ccc;
   border-radius: 8px;
-  background: white;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: default;
   transition: all 0.2s ease;
+}
+
+/* 颜色底色 */
+.card-red {
+  background-color: #ef5350;
+}
+
+.card-blue {
+  background-color: #42a5f5;
+}
+
+.card-green {
+  background-color: #66bb6a;
+}
+
+.card-orange {
+  background-color: #ffa726;
+}
+
+.card-pink {
+  background-color: #ec407a;
 }
 
 .public-card.clickable {
@@ -77,16 +108,11 @@ const handleCardClick = (card: Card) => {
   text-align: center;
 }
 
-.card-color {
-  display: block;
-  font-size: 14px;
-  font-weight: bold;
-  margin-bottom: 4px;
-}
-
 .card-number {
   display: block;
-  font-size: 24px;
+  font-size: 32px;
   font-weight: bold;
+  color: white;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
 }
 </style>

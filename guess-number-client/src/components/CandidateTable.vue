@@ -9,7 +9,7 @@
       </thead>
       <tbody>
         <tr v-for="color in colors" :key="color">
-          <td class="color-cell">{{ color }}</td>
+          <td class="color-cell" :class="getColorClass(color)">{{ color }}</td>
           <td 
             v-for="num in 12" 
             :key="`${color}-${num}`"
@@ -40,6 +40,18 @@ const manuallyBlocked = ref<Map<Color, Set<number>>>(new Map());
 
 const { getGrayReason } = useTableFilter();
 const { revealedNumbers } = useDeduction();
+
+// 获取颜色对应的 CSS 类
+const getColorClass = (color: Color) => {
+  const colorMap: Record<Color, string> = {
+    '红': 'color-red',
+    '蓝': 'color-blue',
+    '绿': 'color-green',
+    '橙': 'color-orange',
+    '粉': 'color-pink'
+  };
+  return colorMap[color];
+};
 
 /**
  * 获取单元格的 CSS 类
@@ -130,7 +142,33 @@ th {
 
 .color-cell {
   font-weight: bold;
-  background-color: #fafafa;
+  min-width: 50px;
+}
+
+/* 颜色底色 */
+.color-red {
+  background-color: #ef5350;
+  color: white;
+}
+
+.color-blue {
+  background-color: #42a5f5;
+  color: white;
+}
+
+.color-green {
+  background-color: #66bb6a;
+  color: white;
+}
+
+.color-orange {
+  background-color: #ffa726;
+  color: white;
+}
+
+.color-pink {
+  background-color: #ec407a;
+  color: white;
 }
 
 .number-cell {
