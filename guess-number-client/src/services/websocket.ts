@@ -32,7 +32,7 @@ class WebSocketService {
     if (token) this.accessToken = token;
 
     this.status = 'connecting';
-    const fullUrl = `${this.url}?roomId=${roomId}${token ? `&token=${token}` : ''}`;
+    const fullUrl = `${this.url}/${roomId}${token ? `?token=${token}` : ''}`;
     
     console.log('[WS] Connecting to:', fullUrl);
     this.ws = new WebSocket(fullUrl);
@@ -73,8 +73,58 @@ class WebSocketService {
     };
   }
 
-  private handleMessage(data: { event: string; payload: any }) {
+  connectWithUrl(url: string) {
+    if (this.status === 'open' || this.status === 'connecting') return;
+
+    this.status = 'connecting';
+    
+    console.log('[WS] Connecting to:', url);
+    this.ws = new WebSocket(url);
+
+    this.ws.onopen = () => {
+      this.status = 'open';
+      console.log('[WS] Connected');
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        this.handleMessage(data);
+      } catch (e) {
+        console.error('[WS] Parse error:', e);
+      }
+    };
+
+    this.ws.onclose = (event) => {
+      this.status = 'closed';
+      console.log('[WS] Closed', event.code, event.reason);
+      this.ws = null;
+      
+      // 如果不是正常关闭，尝试重连
+      if (event.code !== 1000) {
+        this.attemptReconnect();
+      }
+    };
+
+    this.ws.onerror = (error) => {
+      console.error('[WS] Error:', error);
+      this.onError?.('网络连接错误');
+      this.status = 'closed';
+    };
+  }
+
+  private handleMessage(data: { event?: string; payload?: any; players?: any; gamePhase?: string; hostId?: string }) {
     const store = useGameStore();
+    
+    // 处理 Lobby 页面的简单状态更新（没有 event 字段）
+    if (!data.event && data.players) {
+      this.onStateUpdate?.(data as any);
+      return;
+    }
     
     switch (data.event) {
       case 'Event_StateUpdate':

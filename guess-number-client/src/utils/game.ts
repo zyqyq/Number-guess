@@ -4,10 +4,32 @@ import type { Color } from '@/types/game';
 
 /**
  * 根据数字计算点数 (1-12)
+ * 新规则：红 1 一点、红 6 两点、红 11 三点；蓝 2 一点、蓝 7 两点、蓝 12 三点
  * 公式：floor((number - 1) / 5) + 1
  */
 export function getPointFromNumber(number: number): number {
   return Math.floor((number - 1) / 5) + 1;
+}
+
+/**
+ * 根据点数和颜色获取该颜色的起始数字
+ * 红：1, 6, 11, 16... (每 5 个循环)
+ * 蓝：2, 7, 12, 17...
+ * 绿：3, 8, 13, 18...
+ * 橙：4, 9, 14, 19...
+ * 粉：5, 10, 15, 20...
+ */
+export function getStartNumberForColor(color: Color, point: number): number {
+  const colorOffset: Record<Color, number> = {
+    '红': 1,
+    '蓝': 2,
+    '绿': 3,
+    '橙': 4,
+    '粉': 5
+  };
+  const baseOffset = colorOffset[color];
+  // 每个点数的间隔是 5（因为有 5 种颜色）
+  return baseOffset + (point - 1) * 5;
 }
 
 /**
