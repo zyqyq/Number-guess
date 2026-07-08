@@ -6,11 +6,10 @@
         v-for="card in displayCards" 
         :key="card.id"
         class="card"
-        :class="{ 'hidden-number': hideNumbers }"
+        :class="[getColorClass(card.color), { 'hidden-number': hideNumbers }]"
       >
         <div class="card-content">
-          <span class="card-color">{{ card.color }}</span>
-          <span class="card-number">{{ hideNumbers && card.number === null ? '?' : card.number }}</span>
+          <span v-if="!hideNumbers" class="card-number">{{ card.number }}</span>
         </div>
       </div>
     </div>
@@ -31,7 +30,7 @@
 </template>
 
 <script setup lang="ts">
-import type { Player, Card } from '@/types/game';
+import type { Player, Card, Color } from '@/types/game';
 
 const props = defineProps<{
   player: Player;
@@ -43,6 +42,18 @@ const hideNumbers = props.isMe;
 
 // 对于自己的手牌，数字已经由 store 的 myHand 计算属性处理为 null
 const displayCards = props.player.hand;
+
+// 获取颜色对应的 CSS 类
+const getColorClass = (color: Color) => {
+  const colorMap: Record<Color, string> = {
+    '红': 'card-red',
+    '蓝': 'card-blue',
+    '绿': 'card-green',
+    '橙': 'card-orange',
+    '粉': 'card-pink'
+  };
+  return colorMap[color];
+};
 </script>
 
 <style scoped>
@@ -71,32 +82,47 @@ const displayCards = props.player.hand;
   height: 90px;
   border: 2px solid #ccc;
   border-radius: 6px;
-  background: white;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: all 0.2s ease;
 }
 
-.card.hidden-number .card-number {
-  color: #999;
-  font-style: italic;
+/* 颜色底色 */
+.card-red {
+  background-color: #ef5350;
+}
+
+.card-blue {
+  background-color: #42a5f5;
+}
+
+.card-green {
+  background-color: #66bb6a;
+}
+
+.card-orange {
+  background-color: #ffa726;
+}
+
+.card-pink {
+  background-color: #ec407a;
+}
+
+.card.hidden-number {
+  /* 自己的手牌：只显示颜色底色，不显示数字 */
 }
 
 .card-content {
   text-align: center;
 }
 
-.card-color {
-  display: block;
-  font-size: 12px;
-  font-weight: bold;
-  margin-bottom: 4px;
-}
-
 .card-number {
   display: block;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: bold;
+  color: white;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .clues {
