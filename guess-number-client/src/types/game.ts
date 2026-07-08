@@ -77,10 +77,14 @@ export type ClientCommand =
   | { cmd: 'Reconnect'; roomId: string; playerId: string; accessToken?: string }
   | { cmd: 'StartGame' }
   | { cmd: 'SelectColorToDraw'; color: Color }
+  | { cmd: 'SelectPublicCard'; publicCardId: string }
+  | { cmd: 'DeselectPublicCard' }
   | { cmd: 'JudgeByPosition'; publicCardId: string }
   | { cmd: 'JudgeByPoint'; publicCardId: string; targetColor: Color }
   | { cmd: 'SkipTurn' }
   | { cmd: 'SubmitGuess'; guesses: number[] }
+  | { cmd: 'ResetGame' }
+  | { cmd: 'DissolveRoom' }
   | { cmd: 'KickPlayer'; playerId: string };
 
 // WebSocket 服务端事件

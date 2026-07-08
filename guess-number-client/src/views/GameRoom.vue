@@ -6,6 +6,7 @@
       <div class="room-info">
         <span>房间号：{{ roomId }}</span>
         <span>轮次：{{ gameState?.roundNumber || 0 }}</span>
+        <button class="exit-btn" @click="exitRoom">🚪 退出</button>
       </div>
     </header>
 
@@ -15,29 +16,47 @@
       <div class="left-panel">
         <!-- 公共牌区 -->
         <section class="public-section">
-          <h2>公共牌区</h2>
           <PublicCards 
-            :publicCards="gameState?.publicCards || []"
+            :publicCards="displayedPublicCards"
             :clickable="isMyTurn && normalizedSubPhase === 'ACTION_PHASE'"
             @select="handlePublicCardSelect"
           />
         </section>
 
-        <!-- 其他玩家手牌 -->
+        <!-- 其他玩家手牌（合并到单框） -->
         <section class="other-players-section">
-          <h2>其他玩家</h2>
-          <PlayerHand
-            v-for="player in orderedOtherPlayers"
-            :key="player.playerId"
-            :player="player"
-            :isMe="false"
-            :isActive="gameState?.currentTurnPlayerId === player.playerId"
-          />
+          <div class="other-players-container">
+            <div
+              v-for="player in orderedOtherPlayers"
+              :key="player.playerId"
+              class="other-player-row"
+            >
+              <div class="opl-name-wrap" :class="{ 'active-turn': gameState?.currentTurnPlayerId === player.playerId }">
+                <span class="opl-name">{{ player.playerName }}</span>
+                <span v-if="gameState?.currentTurnPlayerId === player.playerId" class="opl-turn-icon">⚡</span>
+              </div>
+              <div class="cards">
+                <div
+                  v-for="card in player.hand"
+                  :key="card.id"
+                  class="card card-base"
+                  :class="getColorClass(card.color)"
+                  :style="{ backgroundColor: getColorValue(card.color) }"
+                >
+                  <div class="card-content">
+                    <span class="card-number">{{ card.number }}</span>
+                    <div class="point-dots">
+                      <span v-for="dot in getPointFromNumber(card.number)" :key="dot" class="point-dot"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
 
         <!-- 自己的手牌 -->
         <section class="my-hand-section">
-          <h2>我的手牌</h2>
           <PlayerHand
             v-if="currentPlayer"
             :player="currentPlayer"
@@ -49,9 +68,9 @@
           />
           <div v-if="pointJudgeMode" class="point-judge-hint">
             👆 点击一张手牌选择目标颜色进行点数判定
-            @select-number="handleCandidateSelect"
-          />
+          </div>
         </section>
+
       </div>
 
       <!-- 右侧：操作栏 -->
@@ -91,7 +110,6 @@
                 :disabled="count.count === 0"
                 @click="handleSelectColor(count.color)"
               >
-                <span class="color-card-label">{{ count.color }}</span>
                 <span class="color-card-count">剩余 {{ count.count }}</span>
               </button>
             </div>
@@ -108,6 +126,9 @@
                 :style="{ backgroundColor: getColorValue(selectedPublicCard.color) }"
               >
                 <span class="card-number-small">{{ selectedPublicCard.number }}</span>
+                <div class="point-dots">
+                  <span v-for="dot in getPointFromNumber(selectedPublicCard.number)" :key="dot" class="point-dot"></span>
+                </div>
               </div>
               <div class="judge-buttons">
                 <button
@@ -126,13 +147,7 @@
             </template>
           </div>
 
-          <!-- 提交猜测按钮（任何时候可用） -->
-          <button 
-            class="btn btn-danger"
-            @click="showGuessModal = true"
-          >
-            提交猜测
-          </button>
+
 
           <!-- 房主跳过按钮 -->
           <button 
@@ -166,15 +181,15 @@
             >
               <div class="my-clue-text">
                 <span v-if="clue.type === 'point'" class="clue-html">
-                  <span :style="{ color: getColorValue(clue.targetColor), fontWeight: 700 }">{{ clue.targetColor }}牌</span>
-                  {{ clue.result ? '是' : '不是' }}
-                  {{ getPointFromNumber(clue.publicCardNumber) }}点
+                  <span :style="{ color: getColorValue(clue.targetColor!), fontWeight: 700 }">{{ clue.targetColor }}牌</span>
+                  {{ (clue as any).result ? '是' : '不是' }}
+                  {{ getPointFromNumber(clue.publicCardNumber!) }}点
                 </span>
                 <span v-else-if="clue.type === 'position'" class="clue-html">
                   数字 {{ clue.publicCardNumber }} 在
-                  <span :style="{ color: getColorValue(getColorFromNumber(clue.publicCardNumber)), fontWeight: 700 }">{{ getColorFromNumber(clue.publicCardNumber) }}</span>
+                  <span :style="{ color: getColorValue(getColorFromNumber(clue.publicCardNumber!)), fontWeight: 700 }">{{ getColorFromNumber(clue.publicCardNumber!) }}</span>
                   和
-                  <span :style="{ color: getColorValue(neighborColor(clue.publicCardNumber)), fontWeight: 700 }">{{ neighborColor(clue.publicCardNumber) }}</span>
+                  <span :style="{ color: getColorValue(neighborColor(clue.publicCardNumber!)), fontWeight: 700 }">{{ neighborColor(clue.publicCardNumber!) }}</span>
                   之间
                 </span>
               </div>
@@ -182,33 +197,60 @@
           </div>
         </div>
       </aside>
+
+      <!-- 备选区表格（跨两列） -->
+      <section class="candidate-section">
+        <CandidateTable
+          :selectedNumbers="guessForm"
+          @select-number="handleCandidateSelect"
+        />
+      </section>
     </main>
 
-    <!-- 猜测弹窗 -->
+    <!-- 猜测弹窗（直接用手牌区已填的数字） -->
     <div v-if="showGuessModal" class="modal-overlay" @click.self="showGuessModal = false">
       <div class="modal">
         <h2>提交你的猜测</h2>
-        <p>按颜色顺序输入你 5 张牌的数字：</p>
-        <div class="guess-inputs">
-          <div 
-            v-for="card in currentPlayer?.hand || []" 
-            :key="card.color"
-            class="guess-input"
-          >
-            <label>{{ card.color }}:</label>
-            <input 
-              type="number" 
-              v-model.number="guessForm[card.color]"
-              min="1" 
-              max="60"
-              @keydown.enter.prevent="handleSubmitGuess"
-            />
-          </div>
+        <p>你的手牌区已填的数字将作为猜测结果提交</p>
+        <div class="guess-preview">
+          <span v-for="color in colorsForGuess" :key="color" class="guess-preview-item" :style="{ background: getColorValue(color) }">
+            <span class="gp-color">{{ color }}</span>
+            <span class="gp-number">{{ guessForm[color] ?? '?' }}</span>
+          </span>
         </div>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="showGuessModal = false">取消</button>
-          <button class="btn btn-primary" @click="handleSubmitGuess">提交</button>
+          <button class="btn btn-primary" :disabled="!allGuessesFilled" @click="handleSubmitGuess">提交</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 猜测结果全局弹窗 -->
+    <div v-if="guessResult" class="modal-overlay">
+      <div class="modal result-modal">
+        <h2>{{ guessResult.correct ? '🎉 猜对了！' : '❌ 猜错了' }}</h2>
+        <p class="result-subtitle">{{ guessResult.playerName }} 的猜测：</p>
+        <div class="guess-preview">
+          <span v-for="(g, gi) in guessResult.guesses" :key="gi" class="guess-preview-item">
+            {{ g }}
+          </span>
+        </div>
+        <p v-if="guessResult.correct" class="result-correct">游戏结束！{{ guessResult.playerName }} 获胜！</p>
+        <p v-else class="result-wrong">正确答案已公开。等待下一位玩家操作。</p>
+        <div v-if="guessResult.correct" class="result-actions">
+          <template v-if="isHost">
+            <button class="btn btn-primary" @click="handleResetGame">🔄 重置游戏</button>
+            <button class="btn btn-danger" :disabled="dissolveCountdown <= 0" @click="handleDissolveRoom">
+              解散房间{{ dissolveCountdown > 0 ? '…' + dissolveCountdown + 's' : '' }}
+            </button>
+          </template>
+          <template v-else>
+            <button class="btn btn-secondary" :disabled="dissolveCountdown <= 0" @click="exitRoom">
+              退出房间{{ dissolveCountdown > 0 ? '…' + dissolveCountdown + 's' : '' }}
+            </button>
+          </template>
+        </div>
+        <button v-if="!guessResult.correct" class="btn btn-secondary" @click="guessResult = null">关闭</button>
       </div>
     </div>
 
@@ -247,6 +289,20 @@ const guessForm = ref<Record<Color, number | null>>({
   橙: null,
   粉: null
 });
+
+// 全局猜测结果弹窗
+const guessResult = ref<{
+  correct: boolean;
+  guesses: number[];
+  correctNumbers?: number[];
+  playerName: string;
+  gameOverInfo?: any;
+} | null>(null);
+const dissolveCountdown = ref(60);
+let dissolveTimer: ReturnType<typeof setInterval> | null = null;
+
+const colorsForGuess: Color[] = ['红', '蓝', '绿', '橙', '粉'];
+const allGuessesFilled = computed(() => colorsForGuess.every(c => typeof guessForm.value[c] === 'number' && guessForm.value[c]! >= 1 && guessForm.value[c]! <= 60));
 
 // 点数判定模式（点击手牌选择目标颜色）
 const pointJudgeMode = ref(false);
@@ -289,17 +345,49 @@ const totalDeckRemaining = computed(() => {
   return Object.values(gameState.value.deckRemainingCount).reduce((s: number, v: any) => s + (Number(v) || 0), 0);
 });
 
+// 已选定的公共牌从显示中移除（不再出现）
+const displayedPublicCards = computed(() => {
+  const allCards = gameState.value?.publicCards || [];
+  if (!selectedPublicCard.value) return allCards;
+  return allCards.filter(c => c.id !== selectedPublicCard.value!.id);
+});
+
+// 退出房间
+const exitRoom = () => {
+  wsService.disconnect();
+  router.push('/');
+};
+
 // WebSocket 事件处理
 const handleStateUpdate = (state: any) => {
   console.log('[GameRoom] State updated:', state);
-  // 状态更新后重置选中的牌
-  selectedPublicCard.value = null;
+  // 判定完成后关闭点数判定模式（选定牌保留到用户手动取消或判定完成）
+  pointJudgeMode.value = false;
 };
 
 const handleGuessResult = (result: any) => {
   console.log('[GameRoom] Guess result:', result);
-  alert(result.correct ? '🎉 恭喜你猜对了！获胜！' : `❌ 猜错了！正确答案是：${JSON.stringify(result.correctNumbers)}`);
+  guessResult.value = result;
   showGuessModal.value = false;
+  if (result.correct) {
+    startDissolveCountdown();
+  }
+};
+
+const startDissolveCountdown = () => {
+  dissolveCountdown.value = 60;
+  if (dissolveTimer) clearInterval(dissolveTimer);
+  dissolveTimer = setInterval(() => {
+    dissolveCountdown.value--;
+    if (dissolveCountdown.value <= 0) {
+      if (dissolveTimer) clearInterval(dissolveTimer);
+      dissolveTimer = null;
+      // 房主自动解散
+      if (isHost.value) {
+        sendCommand({ cmd: 'DissolveRoom' });
+      }
+    }
+  }, 1000);
 };
 
 const handleDisconnect = (data: any) => {
@@ -311,6 +399,15 @@ const handleDisconnect = (data: any) => {
 
 const handleGameOver = (data: any) => {
   console.log('[GameRoom] Game over:', data);
+  if (data) {
+    guessResult.value = {
+      correct: true,
+      guesses: data.correctGuess || [],
+      playerName: data.winnerName || '',
+      gameOverInfo: data,
+    };
+    startDissolveCountdown();
+  }
 };
 
 // 方法
@@ -325,8 +422,10 @@ const handleStartGame = () => {
 const handlePublicCardSelect = (card: Card) => {
   if (selectedPublicCard.value?.id === card.id) {
     selectedPublicCard.value = null;
+    sendCommand({ cmd: 'DeselectPublicCard' });
   } else {
     selectedPublicCard.value = card;
+    sendCommand({ cmd: 'SelectPublicCard', publicCardId: card.id });
   }
 };
 
@@ -365,18 +464,27 @@ const handleSkipTurn = () => {
 };
 
 const handleSubmitGuess = () => {
-  const guesses = [guessForm.value.红, guessForm.value.蓝, guessForm.value.绿, guessForm.value.橙, guessForm.value.粉];
-
+  const guesses: number[] = colorsForGuess.map(c => guessForm.value[c]!);
   if (guesses.some(g => typeof g !== 'number' || g < 1 || g > 60)) {
-    alert('请输入 1-60 之间的数字');
+    alert('请先在备选区点击或手牌区输入完整数字');
     return;
   }
-  
-  sendCommand({
-    cmd: 'SubmitGuess',
-    guesses: guesses as number[]
-  });
+  sendCommand({ cmd: 'SubmitGuess', guesses });
   showGuessModal.value = false;
+};
+
+const handleResetGame = () => {
+  sendCommand({ cmd: 'ResetGame' });
+  guessResult.value = null;
+  if (dissolveTimer) clearInterval(dissolveTimer);
+  dissolveTimer = null;
+};
+
+const handleDissolveRoom = () => {
+  sendCommand({ cmd: 'DissolveRoom' });
+  guessResult.value = null;
+  if (dissolveTimer) clearInterval(dissolveTimer);
+  dissolveTimer = null;
 };
 
 const handleHandNumberCommit = (color: Color, number: number) => {
@@ -415,6 +523,10 @@ onMounted(() => {
   wsService.setGuessResultCallback(handleGuessResult);
   wsService.setDisconnectCallback(handleDisconnect);
   wsService.setGameOverCallback(handleGameOver);
+  wsService.setRoomClosedCallback(() => {
+    alert('房间已解散');
+    exitRoom();
+  });
   
   if (wsService.getStatus() !== 'open') {
     wsService.connectWithUrl(`ws://localhost:8000/ws/${roomId.value}/${playerName.value}`);
@@ -422,6 +534,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (dissolveTimer) clearInterval(dissolveTimer);
   wsService.disconnect();
 });
 </script>
@@ -451,13 +564,34 @@ onUnmounted(() => {
 .room-info {
   display: flex;
   gap: 20px;
+  align-items: center;
   color: #666;
+}
+
+.exit-btn {
+  background: #e53935;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.exit-btn:hover {
+  background: #c62828;
 }
 
 .game-main {
   display: grid;
-  grid-template-columns: 3fr 1fr;
+  grid-template-columns: 3fr 1fr; /* ← 3:1 分栏，修改数值即可调整比例 */
   gap: 24px;
+}
+
+/* 备选区跨两列占满全宽 */
+.candidate-section {
+  grid-column: 1 / -1;
 }
 
 .left-panel {
@@ -475,17 +609,103 @@ onUnmounted(() => {
 
 section {
   background: white;
-  padding: 16px;
+  padding: 12px;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
-section h2 {
-  margin: 0 0 16px 0;
+section + section {
+  margin-top: 12px;
+}
+
+/* 三个牌区卡片居中对齐（第3张牌对齐） */
+.public-section .public-cards-inner,
+.my-hand-section .my-hand-grid {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.public-section .public-cards-inner > *,
+.my-hand-section .my-hand-grid .card {
+  flex-shrink: 0;
+}
+
+/* 其他玩家容器 —— 合并到一个框 */
+.other-players-container {
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.other-player-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.opl-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  width: 100px;           /* 固定宽度，避免昵称影响居中 */
+  justify-content: flex-start;
+}
+
+.opl-name {
+  background: rgba(0, 0, 0, 0.72);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+  display: inline-block;
+}
+
+.opl-name-wrap.active-turn .opl-name {
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+.opl-turn-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.other-player-row .cards {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex: 1;
+}
+
+.other-player-row .cards .card {
+  width: 56px;
+  height: 76px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.other-player-row .cards .card .card-number {
   font-size: 18px;
-  color: #333;
-  border-bottom: 1px solid #e0e0e0;
-  padding-bottom: 8px;
+}
+
+.other-player-row .cards .card .point-dot {
+  width: 4px;
+  height: 4px;
 }
 
 .turn-indicator {
@@ -595,22 +815,22 @@ section h2 {
 }
 
 .color-card-buttons {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .color-card-button {
   border: none;
   border-radius: 14px;
-  padding: 16px 14px;
+  padding: 18px 14px;
   color: white;
   cursor: pointer;
-  text-align: left;
-  min-height: 88px;
+  text-align: center;
+  min-height: 72px;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: center;
   transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
 }
@@ -626,15 +846,10 @@ section h2 {
   box-shadow: none;
 }
 
-.color-card-label {
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1;
-}
-
 .color-card-count {
-  font-size: 13px;
-  opacity: 0.92;
+  font-size: 18px;
+  font-weight: 800;
+  opacity: 0.95;
 }
 
 .color-buttons {
@@ -651,7 +866,9 @@ section h2 {
 
 .judge-buttons {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .draw-phase, .action-phase {
@@ -661,55 +878,119 @@ section h2 {
   margin-bottom: 12px;
 }
 
+.selected-label {
+  text-align: center;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #555;
+}
+
+.selected-card-visual {
+  margin: 0 auto 8px;
+}
+
+.card-mini {
+  width: 80px;
+  height: 120px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+
+.card-number-small {
+  font-size: 32px;
+  font-weight: 800;
+  color: white;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.card-mini .point-dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px;
+}
+
+.card-mini .point-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.85);
+}
+
+.point-judge-hint {
+  margin-top: 8px;
+  padding: 10px;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+  color: #f57f17;
+  animation: pulse-hint 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-hint {
+  0%,100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 .game-over-info {
-  margin-top: 20px;
-  padding: 16px;
+  margin-top: 16px;
+  padding: 12px;
   background: #fff3e0;
   border-radius: 6px;
   text-align: center;
 }
 
 .game-over-info h3 {
-  margin: 0 0 12px 0;
+  margin: 0 0 8px 0;
+  font-size: 16px;
   color: #e65100;
 }
 
-/* 线索展示 */
-.clues-summary {
+/* 右侧栏个人线索卡片 */
+.my-clues-section {
   margin-top: 16px;
-  padding-top: 16px;
-  border-top: 2px solid #e0e0e0;
+  background: white;
+  padding: 12px;
+  border-radius: 6px;
 }
 
-.clues-summary h3 {
+.my-clues-section h3 {
   margin: 0 0 12px 0;
   font-size: 16px;
-  color: #555;
+  color: #333;
 }
 
-.clue-list {
+.my-clue-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.clue-item {
-  display: flex;
-  gap: 12px;
-  padding: 8px 12px;
-  background: #f5f5f5;
+.my-clue-card {
+  padding: 10px 12px;
+  background: #f0f4ff;
+  border-left: 3px solid #42a5f5;
   border-radius: 4px;
   font-size: 14px;
+  line-height: 1.6;
 }
 
-.clue-type {
-  font-weight: bold;
-  color: #1976d2;
-  min-width: 40px;
+.my-clue-card:first-child {
+  font-size: 15px;
+  font-weight: 600;
+  background: #e3f2fd;
+  border-left-color: #1976d2;
 }
 
-.clue-detail {
-  color: #333;
+.clue-html {
+  font-size: inherit;
 }
 
 /* 猜测弹窗 */
@@ -771,4 +1052,33 @@ section h2 {
   gap: 12px;
   margin-top: 20px;
 }
+
+/* 猜测预览 */
+.guess-preview {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 12px 0;
+  flex-wrap: wrap;
+}
+
+.guess-preview-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: white;
+  font-weight: 700;
+  min-width: 50px;
+}
+
+.gp-color { font-size: 11px; opacity: 0.85; }
+.gp-number { font-size: 22px; }
+
+.result-modal h2 { text-align: center; }
+.result-subtitle { text-align: center; color: #666; }
+.result-correct { text-align: center; color: #2e7d32; font-weight: 700; }
+.result-wrong { text-align: center; color: #c62828; }
+.result-actions { display: flex; gap: 12px; justify-content: center; margin-top: 16px; }
 </style>

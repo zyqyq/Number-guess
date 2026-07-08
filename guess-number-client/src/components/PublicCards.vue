@@ -56,9 +56,14 @@ const handleCardClick = (card: Card) => {
 
 <style scoped>
 .public-cards {
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.public-cards-inner {
   display: flex;
   gap: 12px;
-  padding: 16px;
   justify-content: center;
 }
 

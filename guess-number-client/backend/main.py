@@ -106,6 +106,7 @@ class GameRoom:
         self.deckRemainingCount: Dict[str, int] = {color: 12 for color in Color.ALL}
         self.pendingJudgement: Optional[dict] = None
         self.gameOverInfo: Optional[dict] = None
+        self.selectedPublicCardId: Optional[str] = None
         self.seed = str(uuid.uuid4())[:8]
         self.ws_connections: Dict[str, WebSocket] = {}
 
@@ -126,7 +127,7 @@ class GameRoom:
             "currentTurnPlayerId": self.currentTurnPlayerId,
             "turnOrder": self.turnOrder,
             "deckRemainingCount": self.deckRemainingCount,
-            "publicCards": [card.to_dict() for card in self.publicCards],
+            "publicCards": [c.to_dict() for c in self.publicCards if c.id != self.selectedPublicCardId],
             "players": {pid: player.to_dict() for pid, player in self.players.items()},
             "pendingJudgement": self.pendingJudgement,
             "gameOverInfo": self.gameOverInfo,
@@ -442,6 +443,12 @@ async def cmd_submit_guess(room: GameRoom, player_id: str, guesses: Optional[Lis
             actual_numbers.append(card.number)
 
     correct = guesses == actual_numbers
+    result_payload = {
+        "correct": correct,
+        "guesses": guesses,
+        "playerName": player.playerName,
+        "isHost": player_id == room.hostId,
+    }
     if correct:
         room.gamePhase = "GAME_OVER"
         room.gameOverInfo = {
@@ -450,14 +457,17 @@ async def cmd_submit_guess(room: GameRoom, player_id: str, guesses: Optional[Lis
             "correctGuess": guesses,
             "reason": "correct_guess",
         }
+        result_payload["gameOverInfo"] = room.gameOverInfo
         await room.broadcast_state()
-        await room.send_to_player(player.playerId, "Event_GameOver", room.gameOverInfo)
     else:
-        await room.send_to_player(
-            player.playerId,
-            "Event_GuessResult",
-            {"correct": False, "correctNumbers": actual_numbers},
-        )
+        result_payload["correctNumbers"] = actual_numbers
+
+    # 向所有玩家广播猜测结果
+    for pid, ws in list(room.ws_connections.items()):
+        try:
+            await ws.send_json({"event": "Event_GuessResult", "payload": result_payload})
+        except Exception:
+            pass
 
 
 async def cmd_kick_player(room: GameRoom, kicker_id: str, kicked_id: Optional[str]):
@@ -496,6 +506,31 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await cmd_kick_player(room, player_id, message.get("playerId"))
     elif cmd == "Reconnect":
         await cmd_reconnect(room, player_id, message.get("accessToken"))
+    elif cmd == "SelectPublicCard":
+        room.selectedPublicCardId = message.get("publicCardId")
+        await room.broadcast_state()
+    elif cmd == "DeselectPublicCard":
+        room.selectedPublicCardId = None
+        await room.broadcast_state()
+    elif cmd == "ResetGame":
+        if player_id == room.hostId:
+            rooms.pop(room.roomId, None)
+            # 创建新房间
+            new_room = GameRoom(room.roomId, player_id)
+            for pid, p in room.players.items():
+                ws = room.ws_connections.get(pid)
+                if ws:
+                    new_room.add_player(p, ws)
+            rooms[room.roomId] = new_room
+            await new_room.broadcast_state()
+    elif cmd == "DissolveRoom":
+        if player_id == room.hostId:
+            rooms.pop(room.roomId, None)
+            for pid, ws in list(room.ws_connections.items()):
+                try:
+                    await ws.send_json({"event": "Event_RoomClosed", "payload": {}})
+                except Exception:
+                    pass
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

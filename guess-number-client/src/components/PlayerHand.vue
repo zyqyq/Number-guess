@@ -1,70 +1,32 @@
 <template>
   <div class="player-hand">
-    <div v-if="!isMe" class="player-row">
-      <div class="player-header">
-        <span class="player-label" :class="{ 'active-turn': isActiveTurn }">
-          {{ player.playerName }}
-          <span v-if="isActiveTurn" class="turn-indicator">⚡</span>
-        </span>
-        <span v-if="!player.isAlive" class="eliminated-badge">💀 已出局</span>
-      </div>
-
-      <div class="cards other-cards">
+      <div class="my-hand-grid">
         <div
           v-for="card in displayCards"
           :key="card.id"
-          class="card card-base"
-          :class="getColorClass(card.color)"
+          class="card card-base my-card"
+          :class="[getColorClass(card.color), {
+            selected: hasSelection(card.color),
+            'point-judge-target': pointJudgeMode
+          }]"
           :style="{ backgroundColor: getColorValue(card.color) }"
+          @click="pointJudgeMode && handlePointJudgeClick(card.color)"
         >
-          <div class="card-content">
-            <span class="card-number">{{ card.number }}</span>
-            <div class="point-dots">
-              <span
-                v-for="dot in getPointCount(card.number)"
-                :key="dot"
-                class="point-dot"
-              ></span>
-            </div>
+          <div class="card-content my-card-content">
+            <span class="my-card-color">{{ card.color }}</span>
+            <input
+              class="my-card-input"
+              type="number"
+              min="1"
+              max="60"
+              inputmode="numeric"
+              v-model="draftValues[card.color]"
+              @keydown.enter.prevent="commitCard(card.color)"
+              @click.stop
+            />
           </div>
         </div>
       </div>
-    </div>
-
-    <div v-else class="my-hand-grid">
-      <div
-        v-for="card in displayCards"
-        :key="card.id"
-        class="card card-base my-card"
-        :class="[getColorClass(card.color), { selected: hasSelection(card.color) }]"
-        :style="{ backgroundColor: getColorValue(card.color) }"
-      >
-        <div class="card-content my-card-content">
-          <span class="my-card-color">{{ card.color }}</span>
-          <input
-            class="my-card-input"
-            type="number"
-            min="1"
-            max="60"
-            inputmode="numeric"
-            v-model="draftValues[card.color]"
-            @keydown.enter.prevent="commitCard(card.color)"
-          />
-        </div>
-      </div>
-    </div>
-
-    <div class="clues" v-if="player.clues && player.clues.length > 0">
-      <h4>线索:</h4>
-      <div v-for="clue in player.clues" :key="clue.id" class="clue-item">
-        <span v-if="clue.type === 'position'">
-          公牌 {{ clue.publicCardNumber }} 位于位置 {{ clue.result }}
-        </span>
-        <span v-else-if="clue.type === 'point'">
-          公牌 {{ clue.publicCardNumber }} 与 {{ clue.targetColor }} 点数{{ clue.result ? '相同' : '不同' }}
-        </span>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -78,10 +40,12 @@ const props = defineProps<{
   isMe?: boolean;
   isActive?: boolean;
   selectedNumbers?: Partial<Record<Color, number | null>>;
+  pointJudgeMode?: boolean;
 }>();
 
 const emit = defineEmits<{
   commitNumber: [color: Color, number: number];
+  pointJudgeSelect: [color: Color];
 }>();
 
 const displayCards = computed(() => props.player.hand);
@@ -123,6 +87,10 @@ const commitCard = (color: Color) => {
 const getPointCount = (num: number): number => {
   return getPointFromNumber(num);
 };
+
+const handlePointJudgeClick = (color: Color) => {
+  emit('pointJudgeSelect', color);
+};
 </script>
 
 <style scoped>
@@ -134,63 +102,6 @@ const getPointCount = (num: number): number => {
   background: #fafafa;
 }
 
-.player-row {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.player-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.player-label {
-  background: rgba(0, 0, 0, 0.72);
-  color: white;
-  padding: 4px 12px;
-  border-radius: 999px;
-  font-size: 14px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.player-label.active-turn {
-  animation: breathe 1.5s ease-in-out infinite;
-}
-
-@keyframes breathe {
-  0%,
-  100% {
-    box-shadow: 0 0 5px rgba(76, 175, 80, 0.5);
-  }
-
-  50% {
-    box-shadow: 0 0 15px rgba(76, 175, 80, 0.8);
-  }
-}
-
-.turn-indicator {
-  font-size: 12px;
-  animation: flash 1s ease-in-out infinite;
-}
-
-@keyframes flash {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.5;
-  }
-}
-
 .eliminated-badge {
   font-size: 12px;
   color: #999;
@@ -199,18 +110,17 @@ const getPointCount = (num: number): number => {
   border-radius: 999px;
 }
 
-.cards,
 .my-hand-grid {
   display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+  gap: 12px;
   justify-content: center;
   align-items: center;
 }
 
-.card {
-  width: 66px;
-  height: 96px;
+/* 我的手牌与公共牌同尺寸 */
+.my-hand-grid .card {
+  width: 80px;
+  height: 120px;
   border: 2px solid rgba(255, 255, 255, 0.3);
   border-radius: 10px;
   display: flex;
@@ -225,6 +135,22 @@ const getPointCount = (num: number): number => {
 
 .card.selected {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9) inset, 0 0 16px rgba(255, 255, 255, 0.45);
+}
+
+.card.point-judge-target {
+  cursor: pointer;
+  animation: pulse-point-judge 1s ease-in-out infinite;
+}
+
+@keyframes pulse-point-judge {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7) inset, 0 0 0 3px rgba(255, 235, 59, 0.8);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7) inset, 0 0 0 5px rgba(255, 235, 59, 1), 0 0 20px rgba(255, 235, 59, 0.4);
+    transform: scale(1.05);
+  }
 }
 
 .card-content {
@@ -283,6 +209,14 @@ const getPointCount = (num: number): number => {
   border-radius: 8px;
   padding: 6px 4px;
   box-sizing: border-box;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.my-card-input::-webkit-inner-spin-button,
+.my-card-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .my-card-input::placeholder {

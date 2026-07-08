@@ -16,6 +16,7 @@ class WebSocketService {
   private onGuessResult?: (result: any) => void;
   private onDisconnect?: (data: any) => void;
   private onGameOver?: (data: any) => void;
+  private onRoomClosed?: () => void;
   private onError?: (error: string) => void;
 
   constructor() {
@@ -142,6 +143,9 @@ class WebSocketService {
       case 'Event_GameOver':
         this.onGameOver?.(data.payload);
         break;
+      case 'Event_RoomClosed':
+        this.onRoomClosed?.();
+        break;
       default:
         console.warn('[WS] Unknown event:', data.event);
     }
@@ -191,6 +195,7 @@ class WebSocketService {
   setGuessResultCallback(cb: (result: any) => void) { this.onGuessResult = cb; }
   setDisconnectCallback(cb: (data: any) => void) { this.onDisconnect = cb; }
   setGameOverCallback(cb: (data: any) => void) { this.onGameOver = cb; }
+  setRoomClosedCallback(cb: () => void) { this.onRoomClosed = cb; }
   setErrorCallback(cb: (error: string) => void) { this.onError = cb; }
 
   getStatus() { return this.status; }
