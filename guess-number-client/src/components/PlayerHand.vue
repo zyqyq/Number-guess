@@ -1,15 +1,29 @@
 <template>
   <div class="player-hand">
-    <h3>{{ player.playerName }} {{ isMe ? '(你)' : '' }}</h3>
+    <div class="player-header">
+      <span class="player-label" :class="{ 'active-turn': isActiveTurn }">
+        {{ isMe ? '你' : player.playerName }}
+        <span v-if="isActiveTurn" class="turn-indicator">⚡</span>
+      </span>
+      <span v-if="!player.isAlive" class="eliminated-badge">💀 已出局</span>
+    </div>
     <div class="cards">
       <div 
         v-for="card in displayCards" 
         :key="card.id"
-        class="card"
+        class="card card-base"
         :class="[getColorClass(card.color), { 'hidden-number': hideNumbers }]"
+        :style="{ backgroundColor: getColorValue(card.color) }"
       >
         <div class="card-content">
           <span v-if="!hideNumbers" class="card-number">{{ card.number }}</span>
+          <div v-if="!hideNumbers" class="point-dots">
+            <span 
+              v-for="dot in getPointCount(card.number)" 
+              :key="dot" 
+              class="point-dot"
+            ></span>
+          </div>
         </div>
       </div>
     </div>
@@ -31,6 +45,7 @@
 
 <script setup lang="ts">
 import type { Player, Card, Color } from '@/types/game';
+import { getColorClass, getColorValue, getPointFromNumber } from '@/utils/game';
 
 const props = defineProps<{
   player: Player;
@@ -43,16 +58,15 @@ const hideNumbers = props.isMe;
 // 对于自己的手牌，数字已经由 store 的 myHand 计算属性处理为 null
 const displayCards = props.player.hand;
 
-// 获取颜色对应的 CSS 类
-const getColorClass = (color: Color) => {
-  const colorMap: Record<Color, string> = {
-    '红': 'card-red',
-    '蓝': 'card-blue',
-    '绿': 'card-green',
-    '橙': 'card-orange',
-    '粉': 'card-pink'
-  };
-  return colorMap[color];
+// 判断是否是当前操作玩家（通过父组件传入或从 gameStore 获取）
+const isActiveTurn = false; // TODO: 从 gameStore 获取当前回合玩家 ID
+
+/**
+ * 获取点数（1-12）
+ */
+const getPointCount = (num: number): number => {
+  if (hideNumbers || num == null) return 0;
+  return getPointFromNumber(num);
 };
 </script>
 
@@ -65,10 +79,58 @@ const getColorClass = (color: Color) => {
   background: #fafafa;
 }
 
-.player-hand h3 {
-  margin: 0 0 12px 0;
-  font-size: 16px;
-  color: #333;
+.player-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.player-label {
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: bold;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.player-label.active-turn {
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(76, 175, 80, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 15px rgba(76, 175, 80, 0.8);
+  }
+}
+
+.turn-indicator {
+  font-size: 12px;
+  animation: flash 1s ease-in-out infinite;
+}
+
+@keyframes flash {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.eliminated-badge {
+  font-size: 12px;
+  color: #999;
+  background: #e0e0e0;
+  padding: 2px 8px;
+  border-radius: 4px;
 }
 
 .cards {
@@ -88,33 +150,16 @@ const getColorClass = (color: Color) => {
   transition: all 0.2s ease;
 }
 
-/* 颜色底色 */
-.card-red {
-  background-color: #ef5350;
-}
-
-.card-blue {
-  background-color: #42a5f5;
-}
-
-.card-green {
-  background-color: #66bb6a;
-}
-
-.card-orange {
-  background-color: #ffa726;
-}
-
-.card-pink {
-  background-color: #ec407a;
-}
-
-.card.hidden-number {
-  /* 自己的手牌：只显示颜色底色，不显示数字 */
+.card.hidden-number .card-content {
+  /* 自己的手牌：只显示颜色底色，不显示数字和点数 */
 }
 
 .card-content {
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
 
 .card-number {
@@ -123,6 +168,23 @@ const getColorClass = (color: Color) => {
   font-weight: bold;
   color: white;
   text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* 点数图标容器 */
+.point-dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+}
+
+/* 单个点数图标（小圆点） */
+.point-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .clues {

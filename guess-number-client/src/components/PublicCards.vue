@@ -3,15 +3,23 @@
     <div 
       v-for="card in publicCards" 
       :key="card.id"
-      class="public-card"
+      class="public-card card-base"
       :class="[getColorClass(card.color), { 
         'selected': card.isSelected,
         'clickable': clickable 
       }]"
+      :style="{ backgroundColor: getColorValue(card.color) }"
       @click="handleCardClick(card)"
     >
       <div class="card-content">
         <span class="card-number">{{ card.number }}</span>
+        <div class="point-dots">
+          <span 
+            v-for="dot in getPointCount(card.number)" 
+            :key="dot" 
+            class="point-dot"
+          ></span>
+        </div>
       </div>
     </div>
   </div>
@@ -19,6 +27,7 @@
 
 <script setup lang="ts">
 import type { Card, Color } from '@/types/game';
+import { getColorClass, getColorValue, getPointFromNumber } from '@/utils/game';
 
 const props = defineProps<{
   publicCards: Card[];
@@ -29,16 +38,11 @@ const emit = defineEmits<{
   (e: 'select', card: Card): void;
 }>();
 
-// 获取颜色对应的 CSS 类
-const getColorClass = (color: Color) => {
-  const colorMap: Record<Color, string> = {
-    '红': 'card-red',
-    '蓝': 'card-blue',
-    '绿': 'card-green',
-    '橙': 'card-orange',
-    '粉': 'card-pink'
-  };
-  return colorMap[color];
+/**
+ * 获取点数（1-12）
+ */
+const getPointCount = (num: number): number => {
+  return getPointFromNumber(num);
 };
 
 const handleCardClick = (card: Card) => {
@@ -106,6 +110,10 @@ const handleCardClick = (card: Card) => {
 
 .card-content {
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .card-number {
@@ -114,5 +122,22 @@ const handleCardClick = (card: Card) => {
   font-weight: bold;
   color: white;
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* 点数图标容器 */
+.point-dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px;
+}
+
+/* 单个点数图标（小圆点） */
+.point-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 </style>
