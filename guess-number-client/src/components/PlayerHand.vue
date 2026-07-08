@@ -1,34 +1,59 @@
 <template>
   <div class="player-hand">
-    <div class="player-header">
-      <span class="player-label" :class="{ 'active-turn': isActiveTurn }">
-        {{ isMe ? '你' : player.playerName }}
-        <span v-if="isActiveTurn" class="turn-indicator">⚡</span>
-      </span>
-      <span v-if="!player.isAlive" class="eliminated-badge">💀 已出局</span>
-    </div>
-    <div class="cards">
-      <div 
-        v-for="card in displayCards" 
-        :key="card.id"
-        class="card card-base"
-        :class="[getColorClass(card.color), { 'hidden-number': hideNumbers }]"
-        :style="{ backgroundColor: getColorValue(card.color) }"
-      >
-        <div class="card-content">
-          <span v-if="!hideNumbers" class="card-number">{{ card.number }}</span>
-          <div v-if="!hideNumbers" class="point-dots">
-            <span 
-              v-for="dot in getPointCount(card.number)" 
-              :key="dot" 
-              class="point-dot"
-            ></span>
+    <div v-if="!isMe" class="player-row">
+      <div class="player-header">
+        <span class="player-label" :class="{ 'active-turn': isActiveTurn }">
+          {{ player.playerName }}
+          <span v-if="isActiveTurn" class="turn-indicator">⚡</span>
+        </span>
+        <span v-if="!player.isAlive" class="eliminated-badge">💀 已出局</span>
+      </div>
+
+      <div class="cards other-cards">
+        <div
+          v-for="card in displayCards"
+          :key="card.id"
+          class="card card-base"
+          :class="getColorClass(card.color)"
+          :style="{ backgroundColor: getColorValue(card.color) }"
+        >
+          <div class="card-content">
+            <span class="card-number">{{ card.number }}</span>
+            <div class="point-dots">
+              <span
+                v-for="dot in getPointCount(card.number)"
+                :key="dot"
+                class="point-dot"
+              ></span>
+            </div>
           </div>
         </div>
       </div>
     </div>
-    
-    <!-- 线索区域 -->
+
+    <div v-else class="my-hand-grid">
+      <div
+        v-for="card in displayCards"
+        :key="card.id"
+        class="card card-base my-card"
+        :class="[getColorClass(card.color), { selected: hasSelection(card.color) }]"
+        :style="{ backgroundColor: getColorValue(card.color) }"
+      >
+        <div class="card-content my-card-content">
+          <span class="my-card-color">{{ card.color }}</span>
+          <input
+            class="my-card-input"
+            type="number"
+            min="1"
+            max="60"
+            inputmode="numeric"
+            v-model="draftValues[card.color]"
+            @keydown.enter.prevent="commitCard(card.color)"
+          />
+        </div>
+      </div>
+    </div>
+
     <div class="clues" v-if="player.clues && player.clues.length > 0">
       <h4>线索:</h4>
       <div v-for="clue in player.clues" :key="clue.id" class="clue-item">
@@ -44,28 +69,58 @@
 </template>
 
 <script setup lang="ts">
-import type { Player, Card, Color } from '@/types/game';
+import { computed, reactive, watch } from 'vue';
+import type { Player, Color } from '@/types/game';
 import { getColorClass, getColorValue, getPointFromNumber } from '@/utils/game';
 
 const props = defineProps<{
   player: Player;
   isMe?: boolean;
+  isActive?: boolean;
+  selectedNumbers?: Partial<Record<Color, number | null>>;
 }>();
 
-// 如果是自己，隐藏数字；否则显示完整数字
-const hideNumbers = props.isMe;
+const emit = defineEmits<{
+  commitNumber: [color: Color, number: number];
+}>();
 
-// 对于自己的手牌，数字已经由 store 的 myHand 计算属性处理为 null
-const displayCards = props.player.hand;
+const displayCards = computed(() => props.player.hand);
+const isActiveTurn = computed(() => !!props.isActive);
 
-// 判断是否是当前操作玩家（通过父组件传入或从 gameStore 获取）
-const isActiveTurn = false; // TODO: 从 gameStore 获取当前回合玩家 ID
+const draftValues = reactive<Record<Color, string>>({
+  红: '',
+  蓝: '',
+  绿: '',
+  橙: '',
+  粉: ''
+});
 
-/**
- * 获取点数（1-12）
- */
+const hasSelection = (color: Color) => {
+  return props.selectedNumbers?.[color] != null;
+};
+
+watch(
+  () => props.selectedNumbers,
+  () => {
+    for (const card of displayCards.value) {
+      const selected = props.selectedNumbers?.[card.color];
+      if (selected != null) {
+        draftValues[card.color] = String(selected);
+      }
+    }
+  },
+  { deep: true, immediate: true }
+);
+
+const commitCard = (color: Color) => {
+  const value = Number(draftValues[color]);
+  if (!Number.isInteger(value) || value < 1 || value > 60) {
+    return;
+  }
+  emit('commitNumber', color, value);
+};
+
 const getPointCount = (num: number): number => {
-  if (hideNumbers || num == null) return 0;
   return getPointFromNumber(num);
 };
 </script>
@@ -73,26 +128,33 @@ const getPointCount = (num: number): number => {
 <style scoped>
 .player-hand {
   margin: 16px 0;
-  padding: 12px;
+  padding: 16px;
   border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #fafafa;
+}
+
+.player-row {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  justify-content: center;
+  flex-wrap: wrap;
 }
 
 .player-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
 }
 
 .player-label {
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.72);
   color: white;
   padding: 4px 12px;
-  border-radius: 4px;
+  border-radius: 999px;
   font-size: 14px;
-  font-weight: bold;
+  font-weight: 700;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -103,9 +165,11 @@ const getPointCount = (num: number): number => {
 }
 
 @keyframes breathe {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow: 0 0 5px rgba(76, 175, 80, 0.5);
   }
+
   50% {
     box-shadow: 0 0 15px rgba(76, 175, 80, 0.8);
   }
@@ -117,9 +181,11 @@ const getPointCount = (num: number): number => {
 }
 
 @keyframes flash {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.5;
   }
@@ -130,28 +196,35 @@ const getPointCount = (num: number): number => {
   color: #999;
   background: #e0e0e0;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: 999px;
 }
 
-.cards {
+.cards,
+.my-hand-grid {
   display: flex;
-  gap: 8px;
+  gap: 16px;
   flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
 }
 
 .card {
-  width: 60px;
-  height: 90px;
-  border: 2px solid #ccc;
-  border-radius: 6px;
+  width: 66px;
+  height: 96px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-.card.hidden-number .card-content {
-  /* 自己的手牌：只显示颜色底色，不显示数字和点数 */
+.card:hover {
+  transform: translateY(-2px);
+}
+
+.card.selected {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9) inset, 0 0 16px rgba(255, 255, 255, 0.45);
 }
 
 .card-content {
@@ -165,26 +238,55 @@ const getPointCount = (num: number): number => {
 .card-number {
   display: block;
   font-size: 24px;
-  font-weight: bold;
+  font-weight: 800;
   color: white;
-  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
-/* 点数图标容器 */
 .point-dots {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 2px;
+  max-width: 44px;
 }
 
-/* 单个点数图标（小圆点） */
 .point-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background-color: rgba(255, 255, 255, 0.9);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.my-card-content {
+  width: 100%;
+  padding: 10px 8px;
+}
+
+.my-card-color {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.my-card-input {
+  width: 100%;
+  margin-top: 6px;
+  border: none;
+  outline: none;
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+  text-align: center;
+  font-size: 24px;
+  font-weight: 800;
+  border-radius: 8px;
+  padding: 6px 4px;
+  box-sizing: border-box;
+}
+
+.my-card-input::placeholder {
+  color: rgba(255, 255, 255, 0.75);
 }
 
 .clues {
@@ -194,7 +296,7 @@ const getPointCount = (num: number): number => {
 }
 
 .clues h4 {
-  margin: 0 0 8px 0;
+  margin: 0 0 8px;
   font-size: 14px;
   color: #666;
 }

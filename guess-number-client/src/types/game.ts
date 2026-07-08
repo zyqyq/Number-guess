@@ -58,6 +58,7 @@ export interface GameState {
   subPhase: SubPhase | null;
   roundNumber: number;
   currentTurnPlayerId: string | null;
+  turnOrder?: string[];
   deckRemainingCount: DeckRemainingCount;
   publicCards: Card[];
   players: Record<string, Player>;

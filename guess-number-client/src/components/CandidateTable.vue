@@ -4,31 +4,26 @@
       <thead>
         <tr>
           <th>颜色</th>
-          <th v-for="num in 12" :key="num">{{ num }}</th>
+          <th v-for="point in points" :key="point">{{ point }}</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="color in colors" :key="color">
-          <td class="color-cell" :class="getColorClass(color)"></td>
-          <td 
-            v-for="num in 12" 
-            :key="`${color}-${num}`"
+          <td class="color-cell" :class="getColorClass(color)">{{ color }}</td>
+          <td
+            v-for="point in points"
+            :key="`${color}-${point}`"
             class="number-cell"
-            :class="getCellClass(color, num)"
-            :style="getCellStyle(color, num)"
-            @click.left="handleLeftClick(color, num)"
-            @contextmenu.prevent="handleRightClick(color, num)"
-            @touchstart="handleTouchStart(color, num, $event)"
-            @touchend="handleTouchEnd"
+            :class="getCellClass(color, point)"
+            :style="getCellStyle(color, point)"
+            @click.left="handleSelect(color, point)"
+            @contextmenu.prevent="handleRightClick(color, point)"
+            @touchstart="handleTouchStart(color, point, $event)"
+            @touchend="handleTouchEnd(color, point, $event)"
+            @touchcancel="handleTouchCancel"
           >
-            <span class="number-text">{{ num }}</span>
-            <div class="point-dots">
-              <span 
-                v-for="dot in getPointCount(num)" 
-                :key="dot" 
-                class="point-dot"
-              ></span>
-            </div>
+            <span class="number-text">{{ getCardNumber(color, point) }}</span>
+            <span class="point-label">{{ point }}点</span>
           </td>
         </tr>
       </tbody>
@@ -37,126 +32,143 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref } from 'vue';
 import type { Color } from '@/types/game';
-import { useTableFilter, useDeduction } from '@/composables/gameLogic';
-import { getColorClass, getColorValue, getLightColorValue, getPointFromNumber } from '@/utils/game';
+import { useDeduction, useTableFilter } from '@/composables/gameLogic';
+import { getColorClass, getColorValue, getLightColorValue, getStartNumberForColor } from '@/utils/game';
+
+const props = defineProps<{
+  selectedNumbers?: Partial<Record<Color, number | null>>;
+}>();
+
+const emit = defineEmits<{
+  selectNumber: [color: Color, num: number];
+}>();
 
 const colors: Color[] = ['红', '蓝', '绿', '橙', '粉'];
+const points = Array.from({ length: 12 }, (_, index) => index + 1);
 
-// 手动搁置的数字（颜色 -> 数字集合）
 const manuallyBlocked = ref<Map<Color, Set<number>>>(new Map());
-
-// 已提交的猜测（用于高光显示）
 const submittedGuesses = ref<Set<string>>(new Set());
 
 const { getGrayReason } = useTableFilter();
 const { revealedNumbers } = useDeduction();
 
-/**
- * 获取点数（1-12）
- */
-const getPointCount = (num: number): number => {
-  return getPointFromNumber(num);
+const getCardNumber = (color: Color, point: number): number => {
+  return getStartNumberForColor(color, point);
 };
 
-/**
- * 获取单元格的 CSS 类
- */
-const getCellClass = (color: Color, num: number) => {
-  const isManuallyBlocked = manuallyBlocked.value.get(color)?.has(num) || false;
-  const reason = getGrayReason(num, isManuallyBlocked);
-  const key = `${color}-${num}`;
+const getSelectedNumber = (color: Color): number | null => {
+  return props.selectedNumbers?.[color] ?? null;
+};
+
+const getCellClass = (color: Color, point: number) => {
+  const number = getCardNumber(color, point);
+  const key = `${color}-${number}`;
+  const selectedNumber = getSelectedNumber(color);
+  const isManualBlocked = manuallyBlocked.value.get(color)?.has(number) || false;
   const isSubmitted = submittedGuesses.value.has(key);
-  
+  const reason = getGrayReason(number, isManualBlocked);
+
   return {
-    'revealed': reason === 'revealed',
-    'blocked': reason === 'blocked' && !isSubmitted,
-    'submitted': isSubmitted,
-    'light-blocked': reason === 'blocked' && !isSubmitted
+    revealed: reason === 'revealed',
+    blocked: reason === 'blocked' && !isSubmitted,
+    submitted: isSubmitted,
+    selected: selectedNumber === number,
+    'auto-shelved': selectedNumber !== null && selectedNumber !== number,
+    'manual-shelved': isManualBlocked,
   };
 };
 
-/**
- * 获取单元格的内联样式（用于动态底色）
- */
-const getCellStyle = (color: Color, num: number) => {
-  const key = `${color}-${num}`;
+const getCellStyle = (color: Color, point: number) => {
+  const number = getCardNumber(color, point);
+  const key = `${color}-${number}`;
+  const selectedNumber = getSelectedNumber(color);
   const isRevealed = revealedNumbers.value.has(key);
-  const isManuallyBlocked = manuallyBlocked.value.get(color)?.has(num) || false;
+  const isManualBlocked = manuallyBlocked.value.get(color)?.has(number) || false;
   const isSubmitted = submittedGuesses.value.has(key);
-  
-  // 已出现的牌：灰显
+
   if (isRevealed) {
-    return { backgroundColor: '#e0e0e0' };
+    return { backgroundColor: '#e7e7e7' };
   }
-  
-  // 提交后的高光
+
   if (isSubmitted) {
-    return { 
-      boxShadow: '0 0 8px rgba(76, 175, 80, 0.6)',
+    return {
+      boxShadow: '0 0 0 2px rgba(76, 175, 80, 0.4) inset, 0 0 14px rgba(76, 175, 80, 0.28)',
       borderColor: '#4CAF50'
     };
   }
-  
-  // 手动搁置：浅色
-  if (isManuallyBlocked) {
+
+  if (selectedNumber === number) {
+    return {
+      backgroundColor: getColorValue(color),
+      boxShadow: '0 0 0 3px rgba(255, 255, 255, 0.75) inset, 0 0 0 2px rgba(255, 255, 255, 0.8), 0 0 14px rgba(255, 255, 255, 0.45)'
+    };
+  }
+
+  if (selectedNumber !== null || isManualBlocked) {
     return { backgroundColor: getLightColorValue(color) };
   }
-  
-  // 默认：该数字牌的标准底色
+
   return { backgroundColor: getColorValue(color) };
 };
 
-/**
- * 左键点击：提交猜测（触发事件）
- */
-const emit = defineEmits<{
-  selectNumber: [color: Color, num: number];
-}>();
-
-const handleLeftClick = (color: Color, num: number) => {
-  // 已出现的数字不能选择
-  if (revealedNumbers.value.has(`${color}-${num}`)) {
+const handleSelect = (color: Color, point: number) => {
+  const number = getCardNumber(color, point);
+  if (revealedNumbers.value.has(`${color}-${number}`)) {
     return;
   }
-  emit('selectNumber', color, num);
+  emit('selectNumber', color, number);
 };
 
-/**
- * 右键点击：搁置/取消搁置
- */
-const handleRightClick = (color: Color, num: number) => {
+const handleRightClick = (color: Color, point: number) => {
+  const number = getCardNumber(color, point);
   if (!manuallyBlocked.value.has(color)) {
     manuallyBlocked.value.set(color, new Set());
   }
   const blockedSet = manuallyBlocked.value.get(color)!;
-  
-  if (blockedSet.has(num)) {
-    blockedSet.delete(num);
+  if (blockedSet.has(number)) {
+    blockedSet.delete(number);
   } else {
-    blockedSet.add(num);
+    blockedSet.add(number);
   }
 };
 
-// 触摸支持：长按搁置
-let longPressTimer: number | null = null;
-const handleTouchStart = (color: Color, num: number, event: TouchEvent) => {
-  longPressTimer = window.setTimeout(() => {
-    handleRightClick(color, num);
-    // 触感反馈
-    if (navigator.vibrate) {
-      navigator.vibrate(50);
-    }
-    longPressTimer = null;
-  }, 300);
+type TouchPoint = {
+  color: Color;
+  point: number;
+  startX: number;
+  startY: number;
 };
 
-const handleTouchEnd = () => {
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
+const touchPoint = ref<TouchPoint | null>(null);
+
+const handleTouchStart = (color: Color, point: number, event: TouchEvent) => {
+  const touch = event.touches[0];
+  if (!touch) return;
+  touchPoint.value = {
+    color,
+    point,
+    startX: touch.clientX,
+    startY: touch.clientY,
+  };
+};
+
+const handleTouchEnd = (color: Color, point: number, event: TouchEvent) => {
+  const start = touchPoint.value;
+  const touch = event.changedTouches[0];
+  touchPoint.value = null;
+  if (!start || !touch) return;
+
+  const deltaX = touch.clientX - start.startX;
+  const deltaY = touch.clientY - start.startY;
+  if (Math.abs(deltaX) < 30 && deltaY < -30) {
+    handleSelect(color, point);
   }
+};
+
+const handleTouchCancel = () => {
+  touchPoint.value = null;
 };
 </script>
 
@@ -166,116 +178,107 @@ const handleTouchEnd = () => {
 }
 
 table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
+  min-width: 860px;
   font-size: 14px;
 }
 
-th, td {
-  border: 1px solid #ddd;
-  padding: 8px;
+th,
+td {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 10px 8px;
   text-align: center;
-  min-width: 30px;
+  min-width: 56px;
 }
 
 th {
-  background-color: #f5f5f5;
-  font-weight: bold;
+  background: #f4f4f4;
+  font-weight: 700;
+  color: #333;
 }
 
 .color-cell {
-  font-weight: bold;
-  min-width: 50px;
+  width: 72px;
+  min-width: 72px;
+  font-weight: 700;
+  color: white;
 }
 
-/* 颜色底色 */
 .color-red {
   background-color: #ef5350;
-  color: white;
 }
 
 .color-blue {
   background-color: #42a5f5;
-  color: white;
 }
 
 .color-green {
   background-color: #66bb6a;
-  color: white;
 }
 
 .color-orange {
   background-color: #ffa726;
-  color: white;
 }
 
 .color-pink {
   background-color: #ec407a;
-  color: white;
 }
 
 .number-cell {
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+  color: white;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
+  user-select: none;
 }
 
 .number-cell:hover:not(.revealed) {
-  transform: scale(1.05);
+  transform: translateY(-1px);
+  filter: brightness(1.03);
 }
 
-/* 数字文本 */
 .number-text {
-  font-size: 16px;
-  font-weight: bold;
-  color: white;
-  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
-/* 点数图标容器 */
-.point-dots {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 2px;
+.point-label {
+  font-size: 12px;
+  opacity: 0.9;
 }
 
-/* 单个点数图标（小圆点） */
-.point-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background-color: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-
-/* 已出现的数字 - 系统自动灰显 */
 .number-cell.revealed {
-  background-color: #e0e0e0 !important;
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.number-cell.revealed .number-text {
+  background-color: #e7e7e7 !important;
   color: #999;
-}
-
-.number-cell.revealed .point-dot {
-  background-color: #999;
-}
-
-/* 用户手动搁置的数字 - 浅色背景 */
-.number-cell.light-blocked {
+  cursor: not-allowed;
   opacity: 0.7;
 }
 
-/* 提交后的高光效果 */
+.number-cell.revealed .number-text,
+.number-cell.revealed .point-label {
+  color: #999;
+  text-shadow: none;
+}
+
+.number-cell.selected {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85) inset, 0 0 14px rgba(255, 255, 255, 0.45);
+}
+
+.number-cell.auto-shelved,
+.number-cell.manual-shelved {
+  opacity: 0.72;
+}
+
 .number-cell.submitted {
-  box-shadow: 0 0 8px rgba(76, 175, 80, 0.6);
-  border: 2px solid #4CAF50;
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.6) inset, 0 0 14px rgba(76, 175, 80, 0.24);
+  border-color: #4CAF50;
 }
 </style>

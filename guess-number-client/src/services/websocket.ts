@@ -122,6 +122,7 @@ class WebSocketService {
     
     // 处理 Lobby 页面的简单状态更新（没有 event 字段）
     if (!data.event && data.players) {
+      store.updateGameState(data as any);
       this.onStateUpdate?.(data as any);
       return;
     }

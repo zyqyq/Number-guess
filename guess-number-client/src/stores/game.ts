@@ -18,7 +18,11 @@ export const useGameStore = defineStore('game', () => {
   // 计算属性：其他玩家列表
   const otherPlayers = computed(() => {
     if (!gameState.value || !myPlayerId.value) return [];
-    return Object.values(gameState.value.players).filter(p => p.playerId !== myPlayerId.value);
+    const state = gameState.value;
+    const order = state.turnOrder && Array.isArray(state.turnOrder)
+      ? state.turnOrder
+      : Object.keys(state.players);
+    return order.map((pid: string) => state.players[pid]).filter((p: any) => p && p.playerId !== myPlayerId.value);
   });
 
   // 计算属性：我的手牌（数字已隐藏）

@@ -18,7 +18,7 @@
           <h2>公共牌区</h2>
           <PublicCards 
             :publicCards="gameState?.publicCards || []"
-            :clickable="isMyTurn && gameState?.subPhase === 'ACTION_PHASE'"
+            :clickable="isMyTurn && normalizedSubPhase === 'ACTION_PHASE'"
             @select="handlePublicCardSelect"
           />
         </section>
@@ -27,10 +27,11 @@
         <section class="other-players-section">
           <h2>其他玩家</h2>
           <PlayerHand
-            v-for="player in otherPlayers"
+            v-for="player in orderedOtherPlayers"
             :key="player.playerId"
             :player="player"
             :isMe="false"
+            :isActive="gameState?.currentTurnPlayerId === player.playerId"
           />
         </section>
 
@@ -41,35 +42,24 @@
             v-if="currentPlayer"
             :player="currentPlayer"
             :isMe="true"
+            :selectedNumbers="guessForm"
+            :pointJudgeMode="pointJudgeMode"
+            @commit-number="handleHandNumberCommit"
+            @point-judge-select="handlePointJudgeSelect"
           />
-          
-          <!-- 线索展示区 -->
-          <div class="clues-summary" v-if="currentPlayer?.clues?.length">
-            <h3>已获得的线索</h3>
-            <div class="clue-list">
-              <div 
-                v-for="clue in currentPlayer.clues" 
-                :key="clue.id"
-                class="clue-item"
-              >
-                <span class="clue-type">{{ clue.type === 'position' ? '位置' : '点数' }}</span>
-                <span class="clue-detail">
-                  {{ formatClueDetail(clue) }}
-                </span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 备选区表格 -->
-        <section class="candidate-section">
-          <h2>备选区（左键选择，右键搁置）</h2>
-          <CandidateTable @select-number="handleCandidateSelect" />
+          <div v-if="pointJudgeMode" class="point-judge-hint">
+            👆 点击一张手牌选择目标颜色进行点数判定
+            @select-number="handleCandidateSelect"
+          />
         </section>
       </div>
 
       <!-- 右侧：操作栏 -->
       <aside class="right-panel">
+        <div class="deck-area">
+          <div class="deck-stack">牌堆</div>
+          <div class="deck-count">剩余：{{ totalDeckRemaining }}</div>
+        </div>
         <div class="turn-indicator">
           <div v-if="isMyTurn" class="my-turn">
             <strong>轮到你了！</strong>
@@ -83,7 +73,7 @@
         <div class="action-buttons">
           <!-- 等待开始状态 -->
           <button 
-            v-if="gameState?.gamePhase === 'WAITING'"
+            v-if="normalizedGamePhase === 'WAITING'"
             class="btn btn-primary"
             @click="handleStartGame"
           >
@@ -91,36 +81,44 @@
           </button>
 
           <!-- 选色抽牌阶段 -->
-          <div v-if="gameState?.subPhase === 'DRAW_PHASE' && isMyTurn" class="draw-phase">
+          <div v-if="normalizedSubPhase === 'DRAW_PHASE' && isMyTurn" class="draw-phase">
             <p>请选择要抽取的颜色：</p>
-            <div class="color-buttons">
+            <div class="color-card-buttons">
               <button
                 v-for="count in colorCounts"
                 :key="count.color"
-                class="btn btn-color"
+                class="color-card-button"
                 :disabled="count.count === 0"
                 @click="handleSelectColor(count.color)"
               >
-                {{ count.color }} ({{ count.count }})
+                <span class="color-card-label">{{ count.color }}</span>
+                <span class="color-card-count">剩余 {{ count.count }}</span>
               </button>
             </div>
           </div>
 
           <!-- 判定阶段 -->
-          <div v-if="gameState?.subPhase === 'ACTION_PHASE' && isMyTurn" class="action-phase">
+          <div v-if="normalizedSubPhase === 'ACTION_PHASE' && isMyTurn" class="action-phase">
             <p v-if="!selectedPublicCard">请先选择一张公共牌</p>
             <template v-else>
-              <p>已选择公牌：{{ selectedPublicCard.color }} {{ selectedPublicCard.number }}</p>
+              <p class="selected-label">已选择公牌</p>
+              <div
+                class="selected-card-visual card-mini"
+                :class="getColorClass(selectedPublicCard.color)"
+                :style="{ backgroundColor: getColorValue(selectedPublicCard.color) }"
+              >
+                <span class="card-number-small">{{ selectedPublicCard.number }}</span>
+              </div>
               <div class="judge-buttons">
-                <button 
+                <button
                   class="btn btn-secondary"
                   @click="handleJudgeByPosition"
                 >
                   位置判定
                 </button>
-                <button 
+                <button
                   class="btn btn-secondary"
-                  @click="handleJudgeByPoint"
+                  @click="startPointJudge"
                 >
                   点数判定
                 </button>
@@ -138,7 +136,7 @@
 
           <!-- 房主跳过按钮 -->
           <button 
-            v-if="isHost && gameState?.subPhase === 'ACTION_PHASE'"
+            v-if="isHost && normalizedSubPhase === 'ACTION_PHASE'"
             class="btn btn-warning"
             @click="handleSkipTurn"
           >
@@ -156,6 +154,33 @@
             🤝 平局！
           </p>
         </div>
+
+        <!-- 个人线索区 -->
+        <div v-if="currentPlayer?.clues?.length" class="my-clues-section">
+          <h3>🧩 线索</h3>
+          <div class="my-clue-list">
+            <div
+              v-for="clue in currentPlayer.clues.slice().reverse()"
+              :key="clue.id"
+              class="my-clue-card"
+            >
+              <div class="my-clue-text">
+                <span v-if="clue.type === 'point'" class="clue-html">
+                  <span :style="{ color: getColorValue(clue.targetColor), fontWeight: 700 }">{{ clue.targetColor }}牌</span>
+                  {{ clue.result ? '是' : '不是' }}
+                  {{ getPointFromNumber(clue.publicCardNumber) }}点
+                </span>
+                <span v-else-if="clue.type === 'position'" class="clue-html">
+                  数字 {{ clue.publicCardNumber }} 在
+                  <span :style="{ color: getColorValue(getColorFromNumber(clue.publicCardNumber)), fontWeight: 700 }">{{ getColorFromNumber(clue.publicCardNumber) }}</span>
+                  和
+                  <span :style="{ color: getColorValue(neighborColor(clue.publicCardNumber)), fontWeight: 700 }">{{ neighborColor(clue.publicCardNumber) }}</span>
+                  之间
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       </aside>
     </main>
 
@@ -166,7 +191,7 @@
         <p>按颜色顺序输入你 5 张牌的数字：</p>
         <div class="guess-inputs">
           <div 
-            v-for="card in myHand" 
+            v-for="card in currentPlayer?.hand || []" 
             :key="card.color"
             class="guess-input"
           >
@@ -176,6 +201,7 @@
               v-model.number="guessForm[card.color]"
               min="1" 
               max="60"
+              @keydown.enter.prevent="handleSubmitGuess"
             />
           </div>
         </div>
@@ -186,69 +212,60 @@
       </div>
     </div>
 
-    <!-- 点数判定目标颜色选择弹窗 -->
-    <div v-if="showPointJudgeModal" class="modal-overlay" @click.self="showPointJudgeModal = false">
-      <div class="modal">
-        <h2>点数判定</h2>
-        <p>选择你要比较的手牌颜色：</p>
-        <div class="color-buttons">
-          <button
-            v-for="card in myHand"
-            :key="card.color"
-            class="btn btn-color"
-            @click="pointJudgeTargetColor = card.color; confirmPointJudge()"
-          >
-            {{ card.color }}
-          </button>
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" @click="showPointJudgeModal = false">取消</button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useGameStore } from '@/stores/game';
-import { useMyHand, useOtherPlayers } from '@/composables/gameLogic';
 import { wsService } from '@/services/websocket';
 import PublicCards from '@/components/PublicCards.vue';
 import PlayerHand from '@/components/PlayerHand.vue';
 import CandidateTable from '@/components/CandidateTable.vue';
 import type { Color, Card, ClientCommand } from '@/types/game';
+import { getColorClass, getColorValue, getPointFromNumber, getColorFromNumber } from '@/utils/game';
 
 const gameStore = useGameStore();
-const { myHand } = useMyHand();
-const { otherPlayers } = useOtherPlayers();
+const route = useRoute();
+const router = useRouter();
 
-// 房间 ID 和玩家 ID（实际应从路由或登录获取）
-const roomId = ref('ROOM001');
-const playerId = ref('P1');
-const isHost = ref(true);
+const roomId = computed(() => String(route.query.roomId || gameStore.gameState?.roomId || 'ROOM001'));
+const playerName = computed(() => String(route.query.playerName || 'Player'));
+const playerId = computed(() => `${roomId.value}_${playerName.value}`);
+const isHost = computed(() => route.query.isHost === 'true');
 
 // 选中的公共牌
 const selectedPublicCard = ref<Card | null>(null);
 
 // 猜测弹窗
 const showGuessModal = ref(false);
-const guessForm = ref<Record<Color, number>>({
-  红: 0,
-  蓝: 0,
-  绿: 0,
-  橙: 0,
-  粉: 0
+const guessForm = ref<Record<Color, number | null>>({
+  红: null,
+  蓝: null,
+  绿: null,
+  橙: null,
+  粉: null
 });
 
-// 点数判定目标颜色选择
-const showPointJudgeModal = ref(false);
-const pointJudgeTargetColor = ref<Color>('红');
+// 点数判定模式（点击手牌选择目标颜色）
+const pointJudgeMode = ref(false);
 
 // 计算属性
 const gameState = computed(() => gameStore.gameState);
 const currentPlayer = computed(() => gameStore.currentPlayer);
+const otherPlayers = computed(() => gameStore.otherPlayers);
+const orderedOtherPlayers = computed(() => {
+  const state = gameState.value;
+  if (!state || !state.turnOrder) return otherPlayers.value;
+  const order: string[] = state.turnOrder;
+  return order
+    .map(pid => state.players[pid])
+    .filter(p => p && p.playerId !== playerId.value);
+});
 const isMyTurn = computed(() => gameStore.isMyTurn);
+const normalizedGamePhase = computed(() => String(gameState.value?.gamePhase || '').toUpperCase());
+const normalizedSubPhase = computed(() => String(gameState.value?.subPhase || '').toUpperCase());
 
 const getCurrentPlayerName = computed(() => {
   if (!gameState.value?.currentTurnPlayerId) return '';
@@ -265,6 +282,11 @@ const colorCounts = computed(() => {
     { color: '粉' as Color, count: gameState.value?.deckRemainingCount.粉 || 0 }
   ];
   return counts;
+});
+
+const totalDeckRemaining = computed(() => {
+  if (!gameState.value || !gameState.value.deckRemainingCount) return 0;
+  return Object.values(gameState.value.deckRemainingCount).reduce((s: number, v: any) => s + (Number(v) || 0), 0);
 });
 
 // WebSocket 事件处理
@@ -323,20 +345,19 @@ const handleJudgeByPosition = () => {
   });
 };
 
-const handleJudgeByPoint = () => {
+const startPointJudge = () => {
   if (!selectedPublicCard.value) return;
-  pointJudgeTargetColor.value = '红';
-  showPointJudgeModal.value = true;
+  pointJudgeMode.value = true;
 };
 
-const confirmPointJudge = () => {
-  if (!selectedPublicCard.value) return;
+const handlePointJudgeSelect = (color: Color) => {
+  if (!selectedPublicCard.value || !pointJudgeMode.value) return;
   sendCommand({
     cmd: 'JudgeByPoint',
     publicCardId: selectedPublicCard.value.id,
-    targetColor: pointJudgeTargetColor.value
+    targetColor: color
   });
-  showPointJudgeModal.value = false;
+  pointJudgeMode.value = false;
 };
 
 const handleSkipTurn = () => {
@@ -344,45 +365,49 @@ const handleSkipTurn = () => {
 };
 
 const handleSubmitGuess = () => {
-  // 验证输入
-  const guesses = [
-    guessForm.value.红,
-    guessForm.value.蓝,
-    guessForm.value.绿,
-    guessForm.value.橙,
-    guessForm.value.粉
-  ];
-  
-  if (guesses.some(g => g < 1 || g > 60)) {
+  const guesses = [guessForm.value.红, guessForm.value.蓝, guessForm.value.绿, guessForm.value.橙, guessForm.value.粉];
+
+  if (guesses.some(g => typeof g !== 'number' || g < 1 || g > 60)) {
     alert('请输入 1-60 之间的数字');
     return;
   }
   
   sendCommand({
     cmd: 'SubmitGuess',
-    guesses: guesses
+    guesses: guesses as number[]
   });
+  showGuessModal.value = false;
 };
 
-const formatClueDetail = (clue: any) => {
-  if (clue.type === 'position') {
-    return `公牌 ${clue.publicCardNumber} 位于位置 ${clue.result}`;
-  } else if (clue.type === 'point') {
-    return `公牌 ${clue.publicCardNumber} 与 ${clue.targetColor} 点数${clue.result ? '相同' : '不同'}`;
+const handleHandNumberCommit = (color: Color, number: number) => {
+  guessForm.value[color] = number;
+};
+
+// 获取某个数字对应颜色的相邻颜色（用于位置线索展示）
+const neighborColor = (number: number): Color => {
+  const colors: Color[] = ['红', '蓝', '绿', '橙', '粉'];
+  const idx = colors.indexOf(getColorFromNumber(number));
+  if (number % 5 === 0) {
+    // 最后一列（60,55,50...）右边没有颜色，取左边
+    return colors[(idx - 1 + 5) % 5];
   }
-  return '';
+  // 取右边的颜色
+  return colors[(idx + 1) % 5];
 };
 
 // 备选区表格选择事件处理
 const handleCandidateSelect = (color: Color, num: number) => {
-  // 将选择的数字填入猜测表单
   guessForm.value[color] = num;
   console.log(`从备选区选择：${color} ${num}`);
 };
 
 // 生命周期
 onMounted(() => {
-  // 设置当前玩家 ID
+  if (!route.query.roomId || !route.query.playerName) {
+    router.replace('/');
+    return;
+  }
+
   gameStore.setMyPlayerId(playerId.value);
   
   // 连接 WebSocket
@@ -391,57 +416,9 @@ onMounted(() => {
   wsService.setDisconnectCallback(handleDisconnect);
   wsService.setGameOverCallback(handleGameOver);
   
-  // 尝试连接（开发环境可注释，使用模拟数据）
-  // wsService.connect(roomId.value);
-  
-  // 模拟加载游戏状态（实际应从 WebSocket 接收）
-  gameStore.updateGameState({
-    roomId: roomId.value,
-    gamePhase: 'PLAYING',
-    subPhase: 'DRAW_PHASE',
-    roundNumber: 1,
-    currentTurnPlayerId: 'P1',
-    deckRemainingCount: { 红: 11, 蓝: 12, 绿: 12, 橙: 12, 粉: 12 },
-    publicCards: [
-      { id: 'pub_1', color: '红', number: 6, isSelected: false },
-      { id: 'pub_2', color: '蓝', number: 12, isSelected: false },
-      { id: 'pub_3', color: '绿', number: 18, isSelected: false },
-      { id: 'pub_4', color: '橙', number: 24, isSelected: false },
-      { id: 'pub_5', color: '粉', number: 30, isSelected: false }
-    ],
-    players: {
-      'P1': {
-        playerId: 'P1',
-        playerName: 'Alice',
-        isAlive: true,
-        isOnline: true,
-        hand: [
-          { id: 'h1_1', color: '红', number: 11 },
-          { id: 'h1_2', color: '蓝', number: 17 },
-          { id: 'h1_3', color: '绿', number: 23 },
-          { id: 'h1_4', color: '橙', number: 29 },
-          { id: 'h1_5', color: '粉', number: 35 }
-        ],
-        clues: []
-      },
-      'P2': {
-        playerId: 'P2',
-        playerName: 'Bob',
-        isAlive: true,
-        isOnline: true,
-        hand: [
-          { id: 'h2_1', color: '红', number: 1 },
-          { id: 'h2_2', color: '蓝', number: 7 },
-          { id: 'h2_3', color: '绿', number: 13 },
-          { id: 'h2_4', color: '橙', number: 19 },
-          { id: 'h2_5', color: '粉', number: 25 }
-        ],
-        clues: []
-      }
-    },
-    pendingJudgement: null,
-    gameOverInfo: null
-  });
+  if (wsService.getStatus() !== 'open') {
+    wsService.connectWithUrl(`ws://localhost:8000/ws/${roomId.value}/${playerName.value}`);
+  }
 });
 
 onUnmounted(() => {
@@ -517,6 +494,27 @@ section h2 {
   border-radius: 6px;
   text-align: center;
 }
+
+.deck-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.deck-stack {
+  width: 84px;
+  height: 110px;
+  border-radius: 8px;
+  background: linear-gradient(180deg,#333,#111);
+  color: white;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-weight:700;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.25);
+}
+.deck-count { color: #444; font-weight:600; }
 
 .my-turn {
   background: #e8f5e9;
@@ -596,11 +594,60 @@ section h2 {
   background: #7b1fa2;
 }
 
+.color-card-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.color-card-button {
+  border: none;
+  border-radius: 14px;
+  padding: 16px 14px;
+  color: white;
+  cursor: pointer;
+  text-align: left;
+  min-height: 88px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+}
+
+.color-card-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  filter: brightness(1.05);
+}
+
+.color-card-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.color-card-label {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.color-card-count {
+  font-size: 13px;
+  opacity: 0.92;
+}
+
 .color-buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
+
+.color-card-button:nth-child(1) { background: linear-gradient(135deg, #ef5350, #d32f2f); }
+.color-card-button:nth-child(2) { background: linear-gradient(135deg, #42a5f5, #1e88e5); }
+.color-card-button:nth-child(3) { background: linear-gradient(135deg, #66bb6a, #43a047); }
+.color-card-button:nth-child(4) { background: linear-gradient(135deg, #ffa726, #fb8c00); }
+.color-card-button:nth-child(5) { background: linear-gradient(135deg, #ec407a, #d81b60); }
 
 .judge-buttons {
   display: flex;

@@ -1,9 +1,5 @@
-<script setup lang="ts">
-import GameRoom from './views/GameRoom.vue'
-</script>
-
 <template>
-  <GameRoom />
+  <router-view />
 </template>
 
 <style scoped>

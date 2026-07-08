@@ -76,6 +76,7 @@ const isHost = ref(false);
 const players = ref<Array<{ playerId: string; playerName: string; isHost: boolean }>>([]);
 const feedbackMsg = ref('');
 const feedbackType = ref<'success' | 'error'>('success');
+const currentPlayerId = computed(() => `${roomId.value}_${playerName.value}`);
 
 onMounted(() => {
   // 从路由参数获取信息
@@ -120,10 +121,18 @@ const connectWebSocket = () => {
     }
     
     // 游戏开始后跳转到游戏页面
-    if ((state as any).gamePhase === 'playing') {
+    const phase = String((state as any).gamePhase || '').toUpperCase();
+    if (phase === 'PLAYING') {
       gameStore.updateGameState(state as any);
-      gameStore.setMyPlayerId('local');
-      router.push('/game');
+      gameStore.setMyPlayerId(currentPlayerId.value);
+      router.push({
+        path: '/game',
+        query: {
+          roomId: roomId.value,
+          playerName: playerName.value,
+          isHost: String(isHost.value)
+        }
+      });
     }
   });
 };

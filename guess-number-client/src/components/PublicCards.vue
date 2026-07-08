@@ -1,9 +1,10 @@
 <template>
   <div class="public-cards">
-    <div 
-      v-for="card in publicCards" 
-      :key="card.id"
-      class="public-card card-base"
+    <transition-group name="draw" tag="div" class="public-cards-inner">
+      <div 
+        v-for="card in publicCards" 
+        :key="card.id"
+        class="public-card card-base"
       :class="[getColorClass(card.color), { 
         'selected': card.isSelected,
         'clickable': clickable 
@@ -21,7 +22,8 @@
           ></span>
         </div>
       </div>
-    </div>
+      </div>
+    </transition-group>
   </div>
 </template>
 
@@ -139,5 +141,18 @@ const handleCardClick = (card: Card) => {
   border-radius: 50%;
   background-color: rgba(255, 255, 255, 0.9);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* 抽牌入场动画 */
+.draw-enter-from {
+  transform: translateY(-30px) scale(0.9);
+  opacity: 0;
+}
+.draw-enter-active {
+  transition: all 360ms cubic-bezier(.2,.8,.2,1);
+}
+.draw-enter-to {
+  transform: translateY(0) scale(1);
+  opacity: 1;
 }
 </style>

@@ -120,12 +120,14 @@ export function getColorFromNumber(number: number): Color {
  * 验证房间号格式（4 位字母/数字）
  */
 export function isValidRoomId(roomId: string): boolean {
-  return /^[A-Za-z0-9]{4}$/.test(roomId);
+  // 仅允许 4 位数字房间号
+  return /^\d{4}$/.test(roomId);
 }
 
 /**
  * 验证昵称格式（2-8 个字符，仅允许中文、英文、数字）
  */
 export function isValidPlayerName(name: string): boolean {
-  return /^[\u4e00-\u9fa5A-Za-z0-9]{2,8}$/.test(name);
+  // 最小长度放宽到 1，最大 8
+  return /^[\u4e00-\u9fa5A-Za-z0-9]{1,8}$/.test(name);
 }
