@@ -159,6 +159,11 @@ class GameRoom:
 rooms: Dict[str, GameRoom] = {}
 
 
+def get_point(number: int) -> int:
+    """根据数字计算点数 (1-3)"""
+    return ((number - 1) // 5) % 3 + 1
+
+
 def create_color_decks() -> Dict[str, List[Card]]:
     """为每种颜色创建独立打乱的12张牌队列
     每种颜色的固定数字序列:
@@ -401,12 +406,29 @@ async def cmd_judge_by_position(room: GameRoom, player_id: str, public_card_id: 
     if not player:
         return
 
-    position = random.randint(0, 5)
-    player.clues.append(Clue("position", public_card.id, public_card.number, result=position))
+    # 位置判定：按数字排序手牌，找出公牌数字落在哪个区间
+    sorted_hand = sorted(player.hand, key=lambda c: c.number)
+    position = 0
+    left_color = None
+    right_color = sorted_hand[0].color if sorted_hand else None
+    for i, card in enumerate(sorted_hand):
+        if public_card.number < card.number:
+            position = i
+            left_color = sorted_hand[i - 1].color if i > 0 else None
+            right_color = card.color
+            break
+    else:
+        # 大于所有
+        position = len(sorted_hand)
+        left_color = sorted_hand[-1].color if sorted_hand else None
+        right_color = None
+
+    result = {"position": position, "leftColor": left_color, "rightColor": right_color}
+    player.clues.append(Clue("position", public_card.id, public_card.number, result=result))
     room.pendingJudgement = {
         "selectedPublicCardId": public_card.id,
         "judgeType": "position",
-        "result": position,
+        "result": result,
     }
     room.subPhase = "JUDGE_RESULT"
     await room.broadcast_state()
@@ -433,7 +455,7 @@ async def cmd_judge_by_point(room: GameRoom, player_id: str, public_card_id: Opt
     if not target_card:
         return
 
-    same_point = public_card.number == target_card.number
+    same_point = get_point(public_card.number) == get_point(target_card.number)
     player.clues.append(
         Clue(
             "point",

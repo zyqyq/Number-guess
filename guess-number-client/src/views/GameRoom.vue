@@ -191,11 +191,28 @@
                   {{ getPointFromNumber(clue.publicCardNumber!) }}点
                 </span>
                 <span v-else-if="clue.type === 'position'" class="clue-html">
-                  数字 {{ clue.publicCardNumber }} 在
-                  <span :style="{ color: getColorValue(getColorFromNumber(clue.publicCardNumber!)), fontWeight: 700 }">{{ getColorFromNumber(clue.publicCardNumber!) }}</span>
-                  和
-                  <span :style="{ color: getColorValue(neighborColor(clue.publicCardNumber!)), fontWeight: 700 }">{{ neighborColor(clue.publicCardNumber!) }}</span>
-                  之间
+                  <template v-if="posResult(clue) as any">
+                  <template v-if="posResult(clue)?.leftColor && posResult(clue)?.rightColor">
+                  数字 {{ clue.publicCardNumber }}
+                    在
+                    <span :style="{ color: getColorValue(posResult(clue)?.leftColor!), fontWeight: 700 }">{{ posResult(clue)?.leftColor }}</span>
+                    和
+                    <span :style="{ color: getColorValue(posResult(clue)?.rightColor!), fontWeight: 700 }">{{ posResult(clue)?.rightColor }}</span>
+                    之间
+                  </template>
+                  <template v-else-if="!posResult(clue)?.leftColor && posResult(clue)?.rightColor">
+                  数字 {{ clue.publicCardNumber }}
+                    比
+                    <span :style="{ color: getColorValue(posResult(clue)?.rightColor!), fontWeight: 700 }">{{ posResult(clue)?.rightColor }}</span>
+                    还小
+                  </template>
+                  <template v-else-if="posResult(clue)?.leftColor && !posResult(clue)?.rightColor">
+                  数字 {{ clue.publicCardNumber }}
+                    比
+                    <span :style="{ color: getColorValue(posResult(clue)?.leftColor!), fontWeight: 700 }">{{ posResult(clue)?.leftColor }}</span>
+                    还大
+                  </template>
+                  </template>
                 </span>
               </div>
             </div>
@@ -577,16 +594,12 @@ const handleHandNumberCommit = (color: Color, number: number) => {
   guessForm.value[color] = number;
 };
 
-// 获取某个数字对应颜色的相邻颜色（用于位置线索展示）
-const neighborColor = (number: number): Color => {
-  const colors: Color[] = ['红', '蓝', '绿', '橙', '粉'];
-  const idx = colors.indexOf(getColorFromNumber(number));
-  if (number % 5 === 0) {
-    // 最后一列（60,55,50...）右边没有颜色，取左边
-    return colors[(idx - 1 + 5) % 5];
+/** 获取位置线索的详细结果（类型安全） */
+const posResult = (clue: { type: string; result: any }) => {
+  if (clue.type === 'position' && clue.result && typeof clue.result !== 'boolean') {
+    return clue.result as { position: number; leftColor: Color | null; rightColor: Color | null };
   }
-  // 取右边的颜色
-  return colors[(idx + 1) % 5];
+  return null;
 };
 
 // 备选区表格选择事件处理

@@ -9,13 +9,19 @@ export interface Card {
   isSelected?: boolean;
 }
 
+export interface PositionResult {
+  position: number;       // 0=最左, 1-4=之间, 5=最右
+  leftColor: Color | null;
+  rightColor: Color | null;
+}
+
 export interface Clue {
   id: string;
   type: 'position' | 'point';
   publicCardId: string;
   publicCardNumber?: number;
   targetColor?: Color;
-  result: number | boolean; // position: 0-5, point: true/false
+  result: PositionResult | boolean; // position: {position,leftColor,rightColor}, point: true/false
   timestamp: number;
 }
 
@@ -43,6 +49,7 @@ export interface PendingJudgement {
   selectedPublicCardId: string;
   judgeType: 'position' | 'point';
   targetColor?: Color;
+  result?: PositionResult | boolean;
 }
 
 export interface GameOverInfo {
