@@ -75,10 +75,6 @@
 
       <!-- 右侧：操作栏 -->
       <aside class="right-panel">
-        <div class="deck-area">
-          <div class="deck-stack">牌堆</div>
-          <div class="deck-count">剩余：{{ totalDeckRemaining }}</div>
-        </div>
         <div class="turn-indicator">
           <div v-if="isMyTurn" class="my-turn">
             <strong>轮到你了！</strong>
@@ -601,10 +597,12 @@ onUnmounted(() => {
 }
 
 .right-panel {
-  background: #f5f5f5;
-  padding: 20px;
   border-radius: 8px;
   height: fit-content;
+  background: white;
+  padding: 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 section {
@@ -615,7 +613,7 @@ section {
 }
 
 section + section {
-  margin-top: 12px;
+  margin-top: 0px;
 }
 
 /* 三个牌区卡片居中对齐（第3张牌对齐） */
@@ -623,7 +621,7 @@ section + section {
 .my-hand-section .my-hand-grid {
   display: flex;
   justify-content: center;
-  gap: 12px;
+  gap: 6px;
   flex-wrap: nowrap;
 }
 
@@ -634,10 +632,10 @@ section + section {
 
 /* 其他玩家容器 —— 合并到一个框 */
 .other-players-container {
-  background: #fafafa;
-  border: 1px solid #e0e0e0;
+  background: #ffffff;
+  border: 1px solid #ffffff;
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 0px 0px;
   display: flex;
   flex-direction: column;
   gap: 8px;

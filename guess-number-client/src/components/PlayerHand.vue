@@ -95,11 +95,11 @@ const handlePointJudgeClick = (color: Color) => {
 
 <style scoped>
 .player-hand {
-  margin: 16px 0;
-  padding: 16px;
-  border: 1px solid #e0e0e0;
+  margin: 0px 0;
+  padding: 0px;
+  border: 1px solid #ffffff;
   border-radius: 12px;
-  background: #fafafa;
+  background: #ffffff;
 }
 
 .eliminated-badge {
