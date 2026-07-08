@@ -54,6 +54,7 @@ export interface GameOverInfo {
 
 export interface GameState {
   roomId: string;
+  hostId?: string;
   gamePhase: GamePhase;
   subPhase: SubPhase | null;
   roundNumber: number;
@@ -65,6 +66,7 @@ export interface GameState {
   pendingJudgement: PendingJudgement | null;
   gameOverInfo: GameOverInfo | null;
   seed?: string;
+  usedCardNumbers?: Array<{ color: Color; number: number }>;
 }
 
 export interface FullStateSnapshot extends GameState {

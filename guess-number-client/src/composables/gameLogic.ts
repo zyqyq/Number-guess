@@ -82,6 +82,10 @@ export function useDeduction() {
   /**
    * 获取所有已出现的数字集合（用于备选区灰显）
    * 返回格式："颜色 - 数字" 的集合
+   * 标灰条件：所有当前玩家可见的牌，包括：
+   *   - 公牌区当前显示的牌
+   *   - 曾出现在公牌区并被判定弃置的牌（usedCardNumbers）
+   *   - 其他玩家的手牌数字（已公开）
    */
   const revealedNumbers = computed(() => {
     const state = gameStore.gameState;
@@ -94,11 +98,19 @@ export function useDeduction() {
       revealed.add(`${card.color}-${card.number}`);
     }
     
-    // 其他玩家的手牌数字（已公开的）
+    // 曾出现在公牌区并被判定弃置的牌（usedCardNumbers）
+    if (state.usedCardNumbers) {
+      for (const item of state.usedCardNumbers) {
+        revealed.add(`${item.color}-${item.number}`);
+      }
+    }
+    
+    // 其他玩家的手牌数字（当前操作玩家可见，备选区标灰）
+    const currentPlayerId = gameStore.myPlayerId;
     for (const playerId in state.players) {
+      if (playerId === currentPlayerId) continue; // 跳过自己的牌
       const player = state.players[playerId];
-      if (!player.isAlive) {
-        // 出局玩家的手牌全部公开
+      if (player.hand) {
         for (const card of player.hand) {
           revealed.add(`${card.color}-${card.number}`);
         }

@@ -7,10 +7,10 @@
             v-for="col in 12"
             :key="`${color}-${col}`"
             class="number-cell"
-            :class="cellClass(cardNumber(color, col))"
+            :class="cellClass(color, cardNumber(color, col))"
             :style="cellStyle(color, cardNumber(color, col))"
-            @click.left="handleSelect(color, cardNumber(color, col))"
-            @contextmenu.prevent="handleRightClick(color, cardNumber(color, col))"
+            @click.left="!isRevealed(color, cardNumber(color, col)) && handleSelect(color, cardNumber(color, col))"
+            @contextmenu.prevent="!isRevealed(color, cardNumber(color, col)) && handleRightClick(color, cardNumber(color, col))"
           >
             <span class="cell-number">{{ cardNumber(color, col) }}</span>
             <div class="cell-points">
@@ -28,12 +28,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import type { Color } from '@/types/game';
 import { getColorValue, getLightColorValue, getPointFromNumber } from '@/utils/game';
 
 const props = defineProps<{
   selectedNumbers?: Partial<Record<Color, number | null>>;
+  revealedCards?: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -55,14 +56,20 @@ const isSelected = (color: Color, num: number) => props.selectedNumbers?.[color]
 
 const isBlocked = (color: Color, num: number) => manuallyBlocked.value.has(keyOf(color, num));
 
-const cellClass = (num: number) => ({
-  revealed: false,
+const isRevealed = (color: Color, num: number) => props.revealedCards?.has(keyOf(color, num)) ?? false;
+
+const cellClass = (color: Color, num: number) => ({
+  revealed: isRevealed(color, num),
 });
 
 const cellStyle = (color: Color, num: number) => {
   const key = keyOf(color, num);
   const sel = isSelected(color, num);
   const blk = isBlocked(color, num);
+  const rev = isRevealed(color, num);
+  if (rev) {
+    return { backgroundColor: '#e0e0e0', color: '#999', opacity: 0.7, cursor: 'not-allowed' };
+  }
   if (sel) {
     return {
       backgroundColor: getColorValue(color),
@@ -90,6 +97,28 @@ const handleRightClick = (color: Color, num: number) => {
   // trigger reactivity
   manuallyBlocked.value = new Set(manuallyBlocked.value);
 };
+
+// 当某一颜色的数字被选中时，自动搁置该颜色所有剩余未标灰、未标灰的数字
+watch(
+  () => props.selectedNumbers,
+  (newVal, oldVal) => {
+    if (!newVal) return;
+    for (const color of colors) {
+      const selectedNum = newVal[color];
+      if (selectedNum != null) {
+        for (let col = 1; col <= 12; col++) {
+          const num = cardNumber(color, col);
+          if (num === selectedNum) continue;
+          const key = keyOf(color, num);
+          if (isRevealed(color, num)) continue;
+          manuallyBlocked.value.add(key);
+        }
+      }
+    }
+    manuallyBlocked.value = new Set(manuallyBlocked.value);
+  },
+  { deep: true }
+);
 </script>
 
 <style scoped>

@@ -190,6 +190,8 @@ class WebSocketService {
     this.status = 'closed';
   }
 
+  getStatus(): WSStatus { return this.status; }
+
   // 设置回调
   setStateUpdateCallback(cb: (state: GameState) => void) { this.onStateUpdate = cb; }
   setGuessResultCallback(cb: (result: any) => void) { this.onGuessResult = cb; }

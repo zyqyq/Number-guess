@@ -78,6 +78,20 @@ const feedbackMsg = ref('');
 const feedbackType = ref<'success' | 'error'>('success');
 const currentPlayerId = computed(() => `${roomId.value}_${playerName.value}`);
 
+const updatePlayerList = (state: any) => {
+  if (state.players) {
+    players.value = Object.values(state.players as any).map((p: any) => ({
+      playerId: p.playerId,
+      playerName: p.playerName,
+      isHost: p.playerId === (state as any).hostId
+    }));
+    
+    if (players.value.length === 4) {
+      showFeedback('房间已满，可以开始游戏了！', 'success');
+    }
+  }
+};
+
 onMounted(() => {
   // 从路由参数获取信息
   roomId.value = (route.query.roomId as string) || '';
@@ -96,29 +110,10 @@ onMounted(() => {
     isHost: isHost.value
   }];
   
-  // 连接 WebSocket
-  connectWebSocket();
-});
-
-const connectWebSocket = () => {
-  const wsUrl = `ws://localhost:8000/ws/${roomId.value}/${playerName.value}`;
-  wsService.connectWithUrl(wsUrl);
-  
+  // 先设回调，再连 WebSocket，确保不丢失消息
   wsService.setStateUpdateCallback((state: any) => {
     console.log('[Lobby] State update:', state);
-    // 更新玩家列表
-    if (state.players) {
-      players.value = Object.values(state.players as any).map((p: any) => ({
-        playerId: p.playerId,
-        playerName: p.playerName,
-        isHost: p.playerId === (state as any).hostId
-      }));
-      
-      // 满员提示
-      if (players.value.length === 4) {
-        showFeedback('房间已满，可以开始游戏了！', 'success');
-      }
-    }
+    updatePlayerList(state);
     
     // 游戏开始后跳转到游戏页面
     const phase = String((state as any).gamePhase || '').toUpperCase();
@@ -135,7 +130,19 @@ const connectWebSocket = () => {
       });
     }
   });
-};
+  
+  // 如果已有连接（从 GameRoom 重置后跳转而来），直接读取当前状态
+  if (wsService.getStatus() === 'open') {
+    const currentState = gameStore.gameState;
+    if (currentState) {
+      updatePlayerList(currentState);
+    }
+  } else {
+    // 首次进入或连接已断开，重新连接
+    const wsUrl = `ws://localhost:8000/ws/${roomId.value}/${playerName.value}`;
+    wsService.connectWithUrl(wsUrl);
+  }
+});
 
 const copyRoomId = async () => {
   try {

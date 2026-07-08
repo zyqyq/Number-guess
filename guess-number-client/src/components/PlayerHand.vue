@@ -49,7 +49,9 @@ const emit = defineEmits<{
   pointJudgeSelect: [color: Color];
 }>();
 
-const displayCards = computed(() => props.player.hand);
+const displayCards = computed(() => 
+  [...props.player.hand].sort((a, b) => a.number - b.number)
+);
 const isActiveTurn = computed(() => !!props.isActive);
 
 const draftValues = reactive<Record<Color, string>>({

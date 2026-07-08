@@ -101,14 +101,15 @@ class GameRoom:
         self.currentTurnPlayerId: Optional[str] = None
         self.turnOrder: List[str] = []
         self.players: Dict[str, Player] = {}
-        self.deck: List[Card] = []
+        self.color_decks: Dict[str, List[Card]] = {}
         self.publicCards: List[Card] = []
         self.removedPublicCardIds: set[str] = set()
-        self.deckRemainingCount: Dict[str, int] = {color: 12 for color in Color.ALL}
+        self.deckRemainingCount: Dict[str, int] = {color: 0 for color in Color.ALL}
         self.pendingJudgement: Optional[dict] = None
         self.gameOverInfo: Optional[dict] = None
         self.selectedPublicCardId: Optional[str] = None
         self.seed = str(uuid.uuid4())[:8]
+        self.usedCardNumbers: List[dict] = []
         self.ws_connections: Dict[str, WebSocket] = {}
 
     def add_player(self, player: Player, ws: WebSocket):
@@ -122,6 +123,7 @@ class GameRoom:
     def get_state(self) -> dict:
         return {
             "roomId": self.roomId,
+            "hostId": self.hostId,
             "gamePhase": self.gamePhase,
             "subPhase": self.subPhase,
             "roundNumber": self.roundNumber,
@@ -133,6 +135,7 @@ class GameRoom:
             "pendingJudgement": self.pendingJudgement,
             "gameOverInfo": self.gameOverInfo,
             "seed": self.seed,
+            "usedCardNumbers": self.usedCardNumbers,
         }
 
     async def broadcast_state(self):
@@ -156,33 +159,43 @@ class GameRoom:
 rooms: Dict[str, GameRoom] = {}
 
 
-def create_deck() -> List[Card]:
-    deck: List[Card] = []
-    for color in Color.ALL:
-        for number in range(1, 13):
-            deck.append(Card(color, number))
-    random.shuffle(deck)
-    return deck
+def create_color_decks() -> Dict[str, List[Card]]:
+    """为每种颜色创建独立打乱的12张牌队列
+    每种颜色的固定数字序列:
+      红: 1,6,11,16,21,26,31,36,41,46,51,56
+      蓝: 2,7,12,17,22,27,32,37,42,47,52,57
+      绿: 3,8,13,18,23,28,33,38,43,48,53,58
+      橙: 4,9,14,19,24,29,34,39,44,49,54,59
+      粉: 5,10,15,20,25,30,35,40,45,50,55,60
+    """
+    decks = {}
+    for idx, color in enumerate(Color.ALL):
+        cards = [Card(color, (idx + 1) + i * 5) for i in range(12)]
+        random.shuffle(cards)
+        decks[color] = cards
+    return decks
 
 
 def update_deck_remaining(room: GameRoom):
     counts = {color: 0 for color in Color.ALL}
-    for card in room.deck:
-        counts[card.color] += 1
+    for color in Color.ALL:
+        counts[color] = len(room.color_decks.get(color, []))
     room.deckRemainingCount = counts
 
 
 def draw_specific_color(room: GameRoom, color: str) -> Optional[Card]:
-    for index, card in enumerate(room.deck):
-        if card.color == color:
-            return room.deck.pop(index)
-    return None
+    color_deck = room.color_decks.get(color, [])
+    if not color_deck:
+        return None
+    return color_deck.pop()
 
 
 def draw_any_card(room: GameRoom) -> Optional[Card]:
-    if not room.deck:
-        return None
-    return room.deck.pop()
+    for color in Color.ALL:
+        color_deck = room.color_decks.get(color, [])
+        if color_deck:
+            return color_deck.pop()
+    return None
 
 
 def find_card(cards: List[Card], card_id: str) -> Optional[Card]:
@@ -208,7 +221,7 @@ def deal_initial_hands(room: GameRoom):
                 card = draw_any_card(room)
             if card is not None:
                 player.hand.append(card)
-        player.hand.sort(key=lambda card: Color.ALL.index(card.color))
+        player.hand.sort(key=lambda card: card.number)
 
 
 def build_public_cards(room: GameRoom, count: int = 6):
@@ -224,7 +237,8 @@ def check_game_over(room: GameRoom) -> bool:
     if room.gamePhase == "GAME_OVER":
         return True
 
-    if not room.deck:
+    all_empty = all(len(room.color_decks.get(c, [])) == 0 for c in Color.ALL)
+    if all_empty:
         room.gamePhase = "GAME_OVER"
         room.gameOverInfo = {
             "winnerId": None,
@@ -304,8 +318,9 @@ def start_game(room: GameRoom) -> bool:
     if len(room.players) != 4:
         return False
 
-    room.deck = create_deck()
+    room.color_decks = create_color_decks()
     room.publicCards = []
+    room.usedCardNumbers = []
     room.roundNumber = 1
     room.gamePhase = "PLAYING"
     room.subPhase = "DRAW_PHASE"
@@ -313,15 +328,10 @@ def start_game(room: GameRoom) -> bool:
     room.gameOverInfo = None
     room.selectedPublicCardId = None
     room.removedPublicCardIds = set()
-    # 抽取 5 张不同颜色的公共牌
+    # 抽取 5 张公共牌（每种颜色各一张）
     room.publicCards = []
-    colors = Color.ALL.copy()
-    random.shuffle(colors)
-    picked = colors[:5]
-    for c in picked:
+    for c in Color.ALL:
         card = draw_specific_color(room, c)
-        if card is None:
-            card = draw_any_card(room)
         if card:
             room.publicCards.append(card)
     deal_initial_hands(room)
@@ -373,6 +383,7 @@ async def cmd_select_public_card(room: GameRoom, player_id: str, public_card_id:
 
     room.selectedPublicCardId = public_card.id
     room.removedPublicCardIds.add(public_card.id)
+    room.usedCardNumbers.append({"color": public_card.color, "number": public_card.number})
     await room.broadcast_state()
 
 
@@ -469,6 +480,7 @@ async def cmd_submit_guess(room: GameRoom, player_id: str, guesses: Optional[Lis
     result_payload = {
         "correct": correct,
         "guesses": guesses,
+        "playerId": player_id,
         "playerName": player.playerName,
         "isHost": player_id == room.hostId,
     }
@@ -536,15 +548,25 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await room.broadcast_state()
     elif cmd == "ResetGame":
         if player_id == room.hostId:
-            rooms.pop(room.roomId, None)
-            # 创建新房间
-            new_room = GameRoom(room.roomId, player_id)
-            for pid, p in room.players.items():
-                ws = room.ws_connections.get(pid)
-                if ws:
-                    new_room.add_player(p, ws)
-            rooms[room.roomId] = new_room
-            await new_room.broadcast_state()
+            # 重置到等待界面，保持房间号和玩家
+            room.gamePhase = "WAITING"
+            room.subPhase = None
+            room.roundNumber = 0
+            room.currentTurnPlayerId = None
+            room.turnOrder = []
+            room.color_decks = {}
+            room.publicCards = []
+            room.removedPublicCardIds = set()
+            room.deckRemainingCount = {color: 0 for color in Color.ALL}
+            room.pendingJudgement = None
+            room.gameOverInfo = None
+            room.selectedPublicCardId = None
+            room.usedCardNumbers = []
+            for p in room.players.values():
+                p.hand = []
+                p.clues = []
+                p.isAlive = True
+            await room.broadcast_state()
     elif cmd == "DissolveRoom":
         if player_id == room.hostId:
             rooms.pop(room.roomId, None)

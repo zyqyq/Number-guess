@@ -6,6 +6,7 @@
       <div class="room-info">
         <span>房间号：{{ roomId }}</span>
         <span>轮次：{{ gameState?.roundNumber || 0 }}</span>
+        <button v-if="isHost && (normalizedGamePhase === 'PLAYING' || normalizedGamePhase === 'GAME_OVER')" class="reset-btn" @click="handleResetGame">🔄 重置</button>
         <button class="exit-btn" @click="exitRoom">🚪 退出</button>
       </div>
     </header>
@@ -37,7 +38,7 @@
               </div>
               <div class="cards">
                 <div
-                  v-for="card in player.hand"
+                  v-for="card in [...player.hand].sort((a, b) => a.number - b.number)"
                   :key="card.id"
                   class="card card-base"
                   :class="getColorClass(card.color)"
@@ -206,6 +207,7 @@
       <section class="candidate-section">
         <CandidateTable
           :selectedNumbers="guessForm"
+          :revealedCards="revealedCards"
           @select-number="handleCandidateSelect"
         />
       </section>
@@ -232,15 +234,32 @@
     <!-- 猜测结果全局弹窗 -->
     <div v-if="guessResult" class="modal-overlay">
       <div class="modal result-modal">
-        <h2>{{ guessResult.correct ? '🎉 猜对了！' : '❌ 猜错了' }}</h2>
-        <p class="result-subtitle">{{ guessResult.playerName }} 的猜测：</p>
-        <div class="guess-preview">
-          <span v-for="(g, gi) in guessResult.guesses" :key="gi" class="guess-preview-item">
-            {{ g }}
-          </span>
-        </div>
-        <p v-if="guessResult.correct" class="result-correct">游戏结束！{{ guessResult.playerName }} 获胜！</p>
-        <p v-else class="result-wrong">正确答案已公开。等待下一位玩家操作。</p>
+        <template v-if="showGuesses || guessResult.correct">
+          <h2>{{ guessResult.correct ? '🎉 猜对了！' : '❌ 猜错了' }}</h2>
+          <p class="result-subtitle">{{ guessResult.playerName }} 的猜测：</p>
+          <div v-if="showGuesses" class="guess-preview">
+            <span v-for="g in sortedGuesses" :key="g" class="guess-preview-item" :style="{ background: getColorValue(getColorFromNumber(g)) }">
+              <span class="gp-number">{{ g }}</span>
+            </span>
+          </div>
+          <p v-if="guessResult.correct" class="result-correct">游戏结束！{{ guessResult.playerName }} 获胜！</p>
+          <template v-else>
+            <p class="result-wrong">正确答案：</p>
+            <div class="guess-preview">
+              <span v-for="n in sortedCorrectNumbers" :key="n" class="guess-preview-item" :style="{ background: getColorValue(getColorFromNumber(n)) }">
+                <span class="gp-number">{{ n }}</span>
+              </span>
+            </div>
+            <p class="result-hint">点击「关闭」以继续游戏</p>
+            <div style="height:8px"></div>
+          </template>
+        </template>
+        <template v-else>
+          <h2>❌ 猜错了</h2>
+          <p class="result-subtitle">{{ guessResult.playerName }} 猜错了</p>
+          <p class="result-hint">点击「关闭」以继续游戏</p>
+          <div style="height:8px"></div>
+        </template>
         <div v-if="guessResult.correct" class="result-actions">
           <template v-if="isHost">
             <button class="btn btn-primary" @click="handleResetGame">🔄 重置游戏</button>
@@ -254,7 +273,7 @@
             </button>
           </template>
         </div>
-        <button v-if="!guessResult.correct" class="btn btn-secondary" @click="guessResult = null">关闭</button>
+        <button v-if="!guessResult.correct" class="btn btn-secondary" @click="handleCloseWrongGuess">关闭</button>
       </div>
     </div>
 
@@ -271,6 +290,7 @@ import PlayerHand from '@/components/PlayerHand.vue';
 import CandidateTable from '@/components/CandidateTable.vue';
 import type { Color, Card, ClientCommand } from '@/types/game';
 import { getColorClass, getColorValue, getPointFromNumber, getColorFromNumber } from '@/utils/game';
+import { useDeduction } from '@/composables/gameLogic';
 
 const gameStore = useGameStore();
 const route = useRoute();
@@ -300,6 +320,7 @@ const guessResult = ref<{
   guesses: number[];
   correctNumbers?: number[];
   playerName: string;
+  playerId: string;
   gameOverInfo?: any;
 } | null>(null);
 const dissolveCountdown = ref(60);
@@ -357,6 +378,26 @@ const totalDeckRemaining = computed(() => {
 // 直接展示后端返回的公共牌（后端已根据 selectedPublicCardId 过滤）
 const displayedPublicCards = computed(() => gameState.value?.publicCards || []);
 
+// 备选区自动标灰
+const deduction = useDeduction();
+const revealedCards = computed(() => deduction.revealedNumbers.value);
+
+// 猜测结果弹窗中是否显示猜测者本人的数字（只有本人可见）
+const showGuesses = computed(() => {
+  return guessResult.value?.playerId === playerId.value;
+});
+
+// 猜测数字按从小到大排序
+const sortedGuesses = computed(() => {
+  if (!guessResult.value?.guesses) return [];
+  return [...guessResult.value.guesses].sort((a, b) => a - b);
+});
+
+const sortedCorrectNumbers = computed(() => {
+  if (!guessResult.value?.correctNumbers) return [];
+  return [...guessResult.value.correctNumbers].sort((a, b) => a - b);
+});
+
 // 退出房间
 const exitRoom = () => {
   wsService.disconnect();
@@ -372,6 +413,26 @@ const handleStateUpdate = (state: any) => {
   const sp = String(state?.subPhase || '').toUpperCase();
   if (sp === 'DRAW_PHASE') {
     selectedPublicCard.value = null;
+  }
+  // 重置到等待界面时清空所有本地状态并跳转回大厅
+  const gp = String(state?.gamePhase || '').toUpperCase();
+  if (gp === 'WAITING') {
+    guessResult.value = null;
+    guessForm.value = { 红: null, 蓝: null, 绿: null, 橙: null, 粉: null };
+    selectedPublicCard.value = null;
+    pointJudgeMode.value = false;
+    if (dissolveTimer) clearInterval(dissolveTimer);
+    dissolveTimer = null;
+    // 不断开 WebSocket，直接跳转 Lobby 复用连接
+    router.push({
+      path: '/lobby',
+      query: {
+        roomId: roomId.value,
+        playerName: playerName.value,
+        isHost: String(isHost.value)
+      }
+    });
+    return;
   }
 };
 
@@ -413,6 +474,7 @@ const handleGameOver = (data: any) => {
     guessResult.value = {
       correct: true,
       guesses: data.correctGuess || [],
+      playerId: data.winnerId || '',
       playerName: data.winnerName || '',
       gameOverInfo: data,
     };
@@ -486,6 +548,9 @@ const handleSubmitGuess = () => {
 const handleResetGame = () => {
   sendCommand({ cmd: 'ResetGame' });
   guessResult.value = null;
+  guessForm.value = { 红: null, 蓝: null, 绿: null, 橙: null, 粉: null };
+  selectedPublicCard.value = null;
+  pointJudgeMode.value = false;
   if (dissolveTimer) clearInterval(dissolveTimer);
   dissolveTimer = null;
 };
@@ -495,6 +560,17 @@ const handleDissolveRoom = () => {
   guessResult.value = null;
   if (dissolveTimer) clearInterval(dissolveTimer);
   dissolveTimer = null;
+};
+
+const handleCloseWrongGuess = () => {
+  if (guessResult.value?.correctNumbers && guessResult.value.playerId === playerId.value) {
+    // 仅猜测者本人：关闭弹窗后将正确答案填入牌区
+    const correctNumbers: number[] = guessResult.value.correctNumbers;
+    colorsForGuess.forEach((c, i) => {
+      guessForm.value[c] = correctNumbers[i];
+    });
+  }
+  guessResult.value = null;
 };
 
 const handleHandNumberCommit = (color: Color, number: number) => {
@@ -545,7 +621,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (dissolveTimer) clearInterval(dissolveTimer);
-  wsService.disconnect();
 });
 </script>
 
@@ -591,6 +666,21 @@ onUnmounted(() => {
 }
 .exit-btn:hover {
   background: #c62828;
+}
+
+.reset-btn {
+  background: #ff8f00;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.reset-btn:hover {
+  background: #e65100;
 }
 
 .game-main {
