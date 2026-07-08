@@ -1,43 +1,39 @@
 ```
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editor
+.vscode/
+.idea/
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
-venv/
-.venv/
-.env
-.env.local
-.env.*
 
-# Logs
-*.log
+# Temporary files
+*.tmp
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# Build artifacts
-build/
-dist/
-*.so
-*.dylib
-*.dll
-*.exe
-*.out
-
-# Dependencies
-node_modules/
-.mypy_cache/
-.pytest_cache/
+# Coverage
 coverage/
 htmlcov/
 .coverage
