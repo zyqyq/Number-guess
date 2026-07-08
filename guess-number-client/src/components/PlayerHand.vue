@@ -22,6 +22,7 @@
               inputmode="numeric"
               v-model="draftValues[card.color]"
               @keydown.enter.prevent="commitCard(card.color)"
+              @blur="commitCard(card.color)"
               @click.stop
             />
           </div>

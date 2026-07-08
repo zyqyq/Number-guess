@@ -103,6 +103,7 @@ class GameRoom:
         self.players: Dict[str, Player] = {}
         self.deck: List[Card] = []
         self.publicCards: List[Card] = []
+        self.removedPublicCardIds: set[str] = set()
         self.deckRemainingCount: Dict[str, int] = {color: 12 for color in Color.ALL}
         self.pendingJudgement: Optional[dict] = None
         self.gameOverInfo: Optional[dict] = None
@@ -127,7 +128,7 @@ class GameRoom:
             "currentTurnPlayerId": self.currentTurnPlayerId,
             "turnOrder": self.turnOrder,
             "deckRemainingCount": self.deckRemainingCount,
-            "publicCards": [c.to_dict() for c in self.publicCards if c.id != self.selectedPublicCardId],
+            "publicCards": [c.to_dict() for c in self.publicCards if c.id not in self.removedPublicCardIds],
             "players": {pid: player.to_dict() for pid, player in self.players.items()},
             "pendingJudgement": self.pendingJudgement,
             "gameOverInfo": self.gameOverInfo,
@@ -165,9 +166,9 @@ def create_deck() -> List[Card]:
 
 
 def update_deck_remaining(room: GameRoom):
-    counts = {color: 12 for color in Color.ALL}
+    counts = {color: 0 for color in Color.ALL}
     for card in room.deck:
-        counts[card.color] -= 1
+        counts[card.color] += 1
     room.deckRemainingCount = counts
 
 
@@ -287,9 +288,14 @@ async def next_turn(room: GameRoom):
         if not found and alive_ids:
             room.currentTurnPlayerId = alive_ids[0]
 
+    # 清除已被判定弃置的公共牌
+    room.publicCards = [c for c in room.publicCards if c.id not in room.removedPublicCardIds]
+    room.removedPublicCardIds.clear()
+
     room.roundNumber += 1
     room.subPhase = "DRAW_PHASE"
     room.pendingJudgement = None
+    room.selectedPublicCardId = None
     update_deck_remaining(room)
     await room.broadcast_state()
 
@@ -305,6 +311,8 @@ def start_game(room: GameRoom) -> bool:
     room.subPhase = "DRAW_PHASE"
     room.pendingJudgement = None
     room.gameOverInfo = None
+    room.selectedPublicCardId = None
+    room.removedPublicCardIds = set()
     # 抽取 5 张不同颜色的公共牌
     room.publicCards = []
     colors = Color.ALL.copy()
@@ -350,6 +358,21 @@ async def cmd_select_color_to_draw(room: GameRoom, player_id: str, color: Option
 
     room.subPhase = "ACTION_PHASE"
     update_deck_remaining(room)
+    await room.broadcast_state()
+
+
+async def cmd_select_public_card(room: GameRoom, player_id: str, public_card_id: Optional[str]):
+    if room.gamePhase != "PLAYING" or room.subPhase != "ACTION_PHASE":
+        return
+    if room.currentTurnPlayerId != player_id or not public_card_id:
+        return
+
+    public_card = find_card(room.publicCards, public_card_id)
+    if not public_card:
+        return
+
+    room.selectedPublicCardId = public_card.id
+    room.removedPublicCardIds.add(public_card.id)
     await room.broadcast_state()
 
 
@@ -507,8 +530,7 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
     elif cmd == "Reconnect":
         await cmd_reconnect(room, player_id, message.get("accessToken"))
     elif cmd == "SelectPublicCard":
-        room.selectedPublicCardId = message.get("publicCardId")
-        await room.broadcast_state()
+        await cmd_select_public_card(room, player_id, message.get("publicCardId"))
     elif cmd == "DeselectPublicCard":
         room.selectedPublicCardId = None
         await room.broadcast_state()

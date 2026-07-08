@@ -3,12 +3,13 @@
 import type { Color } from '@/types/game';
 
 /**
- * 根据数字计算点数 (1-12)
- * 新规则：红 1 一点、红 6 两点、红 11 三点；蓝 2 一点、蓝 7 两点、蓝 12 三点
- * 公式：floor((number - 1) / 5) + 1
+ * 根据数字计算点数 (1-3)
+ * 点数按列循环分布：第1列1点、第2列2点、第3列3点、第4列1点、第5列2点……
+ * 即只有 1、2、3 三种点数可能
+ * 公式：((number - 1) / 5 的列号 % 3) + 1
  */
 export function getPointFromNumber(number: number): number {
-  return Math.floor((number - 1) / 5) + 1;
+  return (Math.floor((number - 1) / 5) % 3) + 1;
 }
 
 /**

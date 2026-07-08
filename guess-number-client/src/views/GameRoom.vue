@@ -112,6 +112,7 @@
           </div>
 
           <!-- 判定阶段 -->
+          <!-- 判定阶段 -->
           <div v-if="normalizedSubPhase === 'ACTION_PHASE' && isMyTurn" class="action-phase">
             <p v-if="!selectedPublicCard">请先选择一张公共牌</p>
             <template v-else>
@@ -143,7 +144,14 @@
             </template>
           </div>
 
-
+          <!-- 提交猜测按钮 -->
+          <button
+            v-if="normalizedGamePhase === 'PLAYING' || normalizedGamePhase === 'WAITING'"
+            class="btn btn-danger"
+            @click="showGuessModal = true"
+          >
+            提交猜测
+          </button>
 
           <!-- 房主跳过按钮 -->
           <button 
@@ -209,9 +217,9 @@
         <h2>提交你的猜测</h2>
         <p>你的手牌区已填的数字将作为猜测结果提交</p>
         <div class="guess-preview">
-          <span v-for="color in colorsForGuess" :key="color" class="guess-preview-item" :style="{ background: getColorValue(color) }">
-            <span class="gp-color">{{ color }}</span>
-            <span class="gp-number">{{ guessForm[color] ?? '?' }}</span>
+          <span v-for="item in sortedGuessPreview" :key="item.color" class="guess-preview-item" :style="{ background: getColorValue(item.color) }">
+            <span class="gp-color">{{ item.color }}</span>
+            <span class="gp-number">{{ item.number ?? '?' }}</span>
           </span>
         </div>
         <div class="modal-actions">
@@ -300,6 +308,11 @@ let dissolveTimer: ReturnType<typeof setInterval> | null = null;
 const colorsForGuess: Color[] = ['红', '蓝', '绿', '橙', '粉'];
 const allGuessesFilled = computed(() => colorsForGuess.every(c => typeof guessForm.value[c] === 'number' && guessForm.value[c]! >= 1 && guessForm.value[c]! <= 60));
 
+const sortedGuessPreview = computed(() => {
+  const items = colorsForGuess.map(c => ({ color: c, number: guessForm.value[c] }));
+  return items.sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+});
+
 // 点数判定模式（点击手牌选择目标颜色）
 const pointJudgeMode = ref(false);
 
@@ -341,12 +354,8 @@ const totalDeckRemaining = computed(() => {
   return Object.values(gameState.value.deckRemainingCount).reduce((s: number, v: any) => s + (Number(v) || 0), 0);
 });
 
-// 已选定的公共牌从显示中移除（不再出现）
-const displayedPublicCards = computed(() => {
-  const allCards = gameState.value?.publicCards || [];
-  if (!selectedPublicCard.value) return allCards;
-  return allCards.filter(c => c.id !== selectedPublicCard.value!.id);
-});
+// 直接展示后端返回的公共牌（后端已根据 selectedPublicCardId 过滤）
+const displayedPublicCards = computed(() => gameState.value?.publicCards || []);
 
 // 退出房间
 const exitRoom = () => {
@@ -359,6 +368,11 @@ const handleStateUpdate = (state: any) => {
   console.log('[GameRoom] State updated:', state);
   // 判定完成后关闭点数判定模式（选定牌保留到用户手动取消或判定完成）
   pointJudgeMode.value = false;
+  // 新回合开始（抽牌阶段）时清空选牌
+  const sp = String(state?.subPhase || '').toUpperCase();
+  if (sp === 'DRAW_PHASE') {
+    selectedPublicCard.value = null;
+  }
 };
 
 const handleGuessResult = (result: any) => {
@@ -1066,7 +1080,7 @@ section + section {
   align-items: center;
   padding: 8px 12px;
   border-radius: 6px;
-  color: white;
+  color: rgb(0, 0, 0);
   font-weight: 700;
   min-width: 50px;
 }

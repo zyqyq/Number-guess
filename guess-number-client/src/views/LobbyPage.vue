@@ -178,9 +178,11 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
 
 <style scoped>
 .lobby-page {
-  min-height: 100vh;
+  position: fixed;
+  inset: 0;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   padding: 40px 20px;
+  overflow-y: auto;
 }
 
 .lobby-container {

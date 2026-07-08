@@ -1,15 +1,8 @@
 <template>
   <div class="candidate-table">
     <table>
-      <thead>
-        <tr>
-          <th class="corner-cell"></th>
-          <th v-for="col in 12" :key="col" class="col-header">{{ col }}</th>
-        </tr>
-      </thead>
       <tbody>
         <tr v-for="(color, rowIdx) in colors" :key="color">
-          <td class="color-cell" :style="{ backgroundColor: getColorValue(color) }">{{ color }}</td>
           <td
             v-for="col in 12"
             :key="`${color}-${col}`"
@@ -107,22 +100,16 @@ const handleRightClick = (color: Color, num: number) => {
 table {
   border-collapse: collapse;
   width: 100%;
-  min-width: 780px;
+  table-layout: fixed;
   font-size: 13px;
 }
 
 th,
 td {
   border: 1px solid rgba(255, 255, 255, 0.18);
-  padding: 6px 4px;
+  padding: 6px 2px;
   text-align: center;
-}
-
-.corner-cell {
-  width: 52px;
-  min-width: 52px;
-  background: #f4f4f4;
-  border: 1px solid #ddd;
+  width: calc(100% / 12);
 }
 
 .col-header {
