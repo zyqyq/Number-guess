@@ -15,12 +15,21 @@
             v-for="(player, index) in players" 
             :key="player.playerId"
             class="player-item"
+            :class="{ 'bot-item': player.isBot }"
           >
             <span class="player-name">
               {{ player.playerName }}
               <span v-if="player.isHost" class="host-badge">👑</span>
+              <span v-if="player.isBot" class="bot-badge">🤖 机器人</span>
             </span>
-            <span class="ready-indicator">✅ 已就绪</span>
+            <button
+              v-if="player.isBot && isHost"
+              class="bot-remove-btn"
+              @click="handleRemoveBot(player.playerId)"
+            >
+              移除
+            </button>
+            <span v-else class="ready-indicator">✅ 已就绪</span>
           </div>
           
           <!-- 空位占位 -->
@@ -41,7 +50,14 @@
           :disabled="players.length < 4"
           @click="handleStartGame"
         >
-          {{ players.length < 4 ? '等待更多玩家加入...' : '🎮 开始游戏' }}
+          {{ players.length < 4 ? `还需 ${4 - players.length} 名玩家（可添加机器人）` : '🎮 开始游戏' }}
+        </button>
+        <button 
+          class="bot-add-btn"
+          :disabled="players.length >= 4"
+          @click="handleAddBot"
+        >
+          {{ players.length >= 4 ? '房间已满 4/4' : '🤖 添加机器人' }}
         </button>
         <button class="dismiss-btn" @click="handleDismissRoom">解散房间</button>
       </div>
@@ -73,7 +89,7 @@ const gameStore = useGameStore();
 const roomId = ref('');
 const playerName = ref('');
 const isHost = ref(false);
-const players = ref<Array<{ playerId: string; playerName: string; isHost: boolean }>>([]);
+const players = ref<Array<{ playerId: string; playerName: string; isHost: boolean; isBot?: boolean }>>([]);
 const feedbackMsg = ref('');
 const feedbackType = ref<'success' | 'error'>('success');
 const currentPlayerId = computed(() => `${roomId.value}_${playerName.value}`);
@@ -83,7 +99,8 @@ const updatePlayerList = (state: any) => {
     players.value = Object.values(state.players as any).map((p: any) => ({
       playerId: p.playerId,
       playerName: p.playerName,
-      isHost: p.playerId === (state as any).hostId
+      isHost: p.playerId === (state as any).hostId,
+      isBot: !!p.isBot
     }));
     
     if (players.value.length === 4) {
@@ -160,6 +177,18 @@ const handleStartGame = () => {
   }
   
   wsService.send({ cmd: 'StartGame' });
+};
+
+const handleAddBot = () => {
+  if (players.value.length >= 4) {
+    showFeedback('房间已满，无法再添加机器人', 'error');
+    return;
+  }
+  wsService.send({ cmd: 'AddBot' });
+};
+
+const handleRemoveBot = (botId: string) => {
+  wsService.send({ cmd: 'RemoveBot', playerId: botId });
 };
 
 const handleDismissRoom = () => {
@@ -272,6 +301,55 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
 
 .host-badge {
   margin-left: 8px;
+}
+
+.bot-badge {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #5e35b1;
+  background: #ede7f6;
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+
+.player-item.bot-item {
+  background: #f6f2ff;
+  border: 1px solid #e0d7f7;
+}
+
+.bot-remove-btn {
+  padding: 6px 14px;
+  background: #fff;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.bot-remove-btn:hover {
+  background: #ffebee;
+}
+
+.bot-add-btn {
+  padding: 14px;
+  background: #fff;
+  color: #5e35b1;
+  border: 2px dashed #b39ddb;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.bot-add-btn:hover:not(:disabled) {
+  background: #f6f2ff;
+}
+
+.bot-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ready-indicator {

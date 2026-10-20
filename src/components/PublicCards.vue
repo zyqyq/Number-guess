@@ -7,7 +7,8 @@
         class="public-card card-base"
       :class="[getColorClass(card.color), { 
         'selected': card.isSelected,
-        'clickable': clickable 
+        'clickable': clickable,
+        'attract': attract && clickable
       }]"
       :style="{ backgroundColor: getColorValue(card.color) }"
       @click="handleCardClick(card)"
@@ -34,6 +35,8 @@ import { getColorClass, getColorValue, getPointFromNumber } from '@/utils/game';
 const props = defineProps<{
   publicCards: Card[];
   clickable?: boolean;
+  /** 轮到本人选牌但尚未选择时，给可选牌加呼吸提示 */
+  attract?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -114,6 +117,29 @@ const handleCardClick = (card: Card) => {
   border-color: #4CAF50;
   box-shadow: 0 0 15px rgba(76, 175, 80, 0.5);
   transform: translateY(-5px);
+}
+
+/* 待选提示：柔和呼吸描边，提示"这里要点一张" */
+.public-card.attract {
+  animation: attract-glow 1.9s ease-in-out infinite;
+}
+
+@keyframes attract-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 152, 0, 0);
+    border-color: #ccc;
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(255, 152, 0, 0.45);
+    border-color: #ffb74d;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .public-card.attract {
+    animation: none;
+    border-color: #ffb74d;
+  }
 }
 
 .card-content {

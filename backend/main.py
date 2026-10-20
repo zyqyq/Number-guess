@@ -71,11 +71,12 @@ class Clue:
 
 
 class Player:
-    def __init__(self, player_id: str, player_name: str):
+    def __init__(self, player_id: str, player_name: str, is_bot: bool = False):
         self.playerId = player_id
         self.playerName = player_name
         self.isAlive = True
         self.isOnline = True
+        self.isBot = is_bot
         self.hand: List[Card] = []
         self.clues: List[Clue] = []
         self.accessToken = str(uuid.uuid4())
@@ -86,6 +87,7 @@ class Player:
             "playerName": self.playerName,
             "isAlive": self.isAlive,
             "isOnline": self.isOnline,
+            "isBot": self.isBot,
             "hand": [card.to_dict() for card in self.hand],
             "clues": [clue.to_dict() for clue in self.clues],
         }
@@ -111,6 +113,121 @@ class GameRoom:
         self.seed = str(uuid.uuid4())[:8]
         self.usedCardNumbers: List[dict] = []
         self.ws_connections: Dict[str, WebSocket] = {}
+        # 机器人：不持有 WebSocket，由一个常驻驱动任务轮询当前回合并代为行动
+        self.botTask: Optional[asyncio.Task] = None
+        self.botSeq = 0
+
+    def add_bot(self) -> Optional[Player]:
+        """在等待阶段由房主添加一个机器人，房间人数上限仍为 4。"""
+        if self.gamePhase != "WAITING" or len(self.players) >= 4:
+            return None
+
+        used_names = {p.playerName for p in self.players.values()}
+        used_ids = set(self.players.keys())
+        seq = self.botSeq
+        while True:
+            seq += 1
+            name = f"机器人{seq}"
+            bot_id = f"{self.roomId}__bot{seq}"
+            if name not in used_names and bot_id not in used_ids:
+                break
+
+        self.botSeq = seq
+        bot = Player(bot_id, name, is_bot=True)
+        self.players[bot_id] = bot
+        return bot
+
+    def remove_bot(self, player_id: str) -> bool:
+        player = self.players.get(player_id)
+        if not player or not player.isBot:
+            return False
+        self.players.pop(player_id, None)
+        self.ws_connections.pop(player_id, None)
+        self.turnOrder = [pid for pid in self.turnOrder if pid != player_id]
+        return True
+
+    def start_bot_driver(self):
+        if not any(p.isBot for p in self.players.values()):
+            return
+        if self.botTask is not None and not self.botTask.done():
+            return
+        self.botTask = asyncio.create_task(self._bot_driver())
+
+    def stop_bot_driver(self):
+        task = self.botTask
+        self.botTask = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _bot_can_act(self, player_id: str) -> bool:
+        return (
+            self.gamePhase == "PLAYING"
+            and self.currentTurnPlayerId == player_id
+            and not self.gameOverInfo
+        )
+
+    async def _bot_driver(self):
+        """常驻轮询：轮到机器人时替它抽牌、选牌、判定；不提交猜测。"""
+        try:
+            while True:
+                await asyncio.sleep(0.2)
+                if self.gamePhase != "PLAYING":
+                    return
+                pid = self.currentTurnPlayerId
+                player = self.players.get(pid) if pid else None
+                if not player or not player.isBot or not player.isAlive:
+                    continue
+                try:
+                    await self._bot_act(player)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[机器人] {player.playerName} 行动异常：{exc}")
+                    await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            return
+
+    async def _bot_act(self, player: Player):
+        pid = player.playerId
+
+        if self.subPhase == "DRAW_PHASE":
+            # 思考停顿，避免瞬间连动
+            await asyncio.sleep(random.uniform(0.9, 1.8))
+            if not self._bot_can_act(pid):
+                return
+            available = [c for c in Color.ALL if self.color_decks.get(c)]
+            if not available:
+                await next_turn(self)
+                return
+            await cmd_select_color_to_draw(self, pid, random.choice(available))
+            return
+
+        if self.subPhase == "ACTION_PHASE":
+            visible = [c for c in self.publicCards if c.id not in self.removedPublicCardIds]
+            if not visible:
+                await next_turn(self)
+                return
+            target = random.choice(visible)
+
+            await asyncio.sleep(random.uniform(0.6, 1.3))
+            if not self._bot_can_act(pid):
+                return
+            if self.selectedPublicCardId != target.id:
+                await cmd_select_public_card(self, pid, target.id)
+
+            await asyncio.sleep(random.uniform(0.7, 1.4))
+            if not self._bot_can_act(pid):
+                return
+            if self.selectedPublicCardId != target.id:
+                # 选牌未生效（牌已不可用等），交给下一轮循环重试
+                return
+
+            hand_colors = [c.color for c in player.hand]
+            if hand_colors and random.random() < 0.5:
+                await cmd_judge_by_point(self, pid, target.id, random.choice(hand_colors))
+            else:
+                await cmd_judge_by_position(self, pid, target.id)
+            return
 
     def add_player(self, player: Player, ws: WebSocket):
         self.players[player.playerId] = player
@@ -317,6 +434,7 @@ async def next_turn(room: GameRoom):
     room.selectedPublicCardId = None
     update_deck_remaining(room)
     await room.broadcast_state()
+    room.start_bot_driver()
 
 
 def start_game(room: GameRoom) -> bool:
@@ -352,6 +470,7 @@ async def cmd_start_game(room: GameRoom, player_id: str):
         return
     if start_game(room):
         await room.broadcast_state()
+        room.start_bot_driver()
 
 
 async def cmd_select_color_to_draw(room: GameRoom, player_id: str, color: Optional[str]):
@@ -571,7 +690,31 @@ async def cmd_kick_player(room: GameRoom, kicker_id: str, kicked_id: Optional[st
     if kicker_id != room.hostId or not kicked_id or kicked_id == room.hostId:
         return
     if kicked_id in room.players:
+        kicked = room.players[kicked_id]
+        was_current = room.currentTurnPlayerId == kicked_id
+        if kicked.isBot:
+            room.stop_bot_driver()
         room.remove_player(kicked_id)
+        room.turnOrder = [pid for pid in room.turnOrder if pid != kicked_id]
+        if was_current and room.gamePhase == "PLAYING":
+            room.currentTurnPlayerId = None
+            await next_turn(room)
+            return
+        await room.broadcast_state()
+        room.start_bot_driver()
+
+
+async def cmd_add_bot(room: GameRoom, player_id: str):
+    if player_id != room.hostId or room.gamePhase != "WAITING":
+        return
+    if room.add_bot():
+        await room.broadcast_state()
+
+
+async def cmd_remove_bot(room: GameRoom, player_id: str, bot_id: Optional[str]):
+    if player_id != room.hostId or room.gamePhase != "WAITING" or not bot_id:
+        return
+    if room.remove_bot(bot_id):
         await room.broadcast_state()
 
 
@@ -601,6 +744,10 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await cmd_submit_guess(room, player_id, message.get("guesses"))
     elif cmd == "KickPlayer":
         await cmd_kick_player(room, player_id, message.get("playerId"))
+    elif cmd == "AddBot":
+        await cmd_add_bot(room, player_id)
+    elif cmd == "RemoveBot":
+        await cmd_remove_bot(room, player_id, message.get("playerId"))
     elif cmd == "Reconnect":
         await cmd_reconnect(room, player_id, message.get("accessToken"))
     elif cmd == "SelectPublicCard":
@@ -610,6 +757,7 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
     elif cmd == "ResetGame":
         if player_id == room.hostId:
             # 重置到等待界面，保持房间号和玩家
+            room.stop_bot_driver()
             room.gamePhase = "WAITING"
             room.subPhase = None
             room.roundNumber = 0
@@ -630,6 +778,7 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
             await room.broadcast_state()
     elif cmd == "DissolveRoom":
         if player_id == room.hostId:
+            room.stop_bot_driver()
             rooms.pop(room.roomId, None)
             for pid, ws in list(room.ws_connections.items()):
                 try:

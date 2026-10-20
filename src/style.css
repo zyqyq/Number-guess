@@ -157,11 +157,11 @@ code {
 }
 
 #app {
-  width: 1126px;
+  /* 全宽容器：各页面自行控制内容宽度（游戏页铺满 16:9，入口/大厅本身是全屏 fixed 布局） */
+  width: 100%;
   max-width: 100%;
   margin: 0 auto;
   text-align: center;
-  border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;
   flex-direction: column;

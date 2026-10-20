@@ -11,173 +11,12 @@
       </div>
     </header>
 
-    <!-- 主游戏区 -->
-    <main class="game-main">
-      <!-- 左侧：牌区和玩家手牌 -->
-      <div class="left-panel">
-        <!-- 公共牌区 -->
-        <section class="public-section">
-          <PublicCards 
-            :publicCards="displayedPublicCards"
-            :clickable="isMyTurn && normalizedSubPhase === 'ACTION_PHASE'"
-            @select="handlePublicCardSelect"
-          />
-        </section>
-
-        <!-- 其他玩家手牌（合并到单框） -->
-        <section class="other-players-section">
-          <div class="other-players-container">
-            <div
-              v-for="player in orderedOtherPlayers"
-              :key="player.playerId"
-              class="other-player-row"
-            >
-              <div class="opl-name-wrap" :class="{ 'active-turn': gameState?.currentTurnPlayerId === player.playerId }">
-                <span class="opl-name">{{ player.playerName }}</span>
-                <span v-if="gameState?.currentTurnPlayerId === player.playerId" class="opl-turn-icon">⚡</span>
-              </div>
-              <div class="cards">
-                <div
-                  v-for="card in [...player.hand].sort((a, b) => a.number - b.number)"
-                  :key="card.id"
-                  class="card card-base"
-                  :class="getColorClass(card.color)"
-                  :style="{ backgroundColor: getColorValue(card.color) }"
-                >
-                  <div class="card-content">
-                    <span class="card-number">{{ card.number }}</span>
-                    <div class="point-dots">
-                      <span v-for="dot in getPointFromNumber(card.number)" :key="dot" class="point-dot"></span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 自己的手牌 -->
-        <section class="my-hand-section">
-          <PlayerHand
-            v-if="currentPlayer"
-            :player="currentPlayer"
-            :isMe="true"
-            :selectedNumbers="guessForm"
-            :pointJudgeMode="pointJudgeMode"
-            @commit-number="handleHandNumberCommit"
-            @point-judge-select="handlePointJudgeSelect"
-          />
-          <div v-if="pointJudgeMode" class="point-judge-hint">
-            👆 点击一张手牌选择目标颜色进行点数判定
-          </div>
-        </section>
-
-      </div>
-
-      <!-- 右侧：操作栏 -->
-      <aside class="right-panel">
-        <div class="turn-indicator">
-          <div v-if="isMyTurn" class="my-turn">
-            <strong>轮到你了！</strong>
-          </div>
-          <div v-else class="other-turn">
-            当前玩家：{{ getCurrentPlayerName }}
-          </div>
-        </div>
-
-        <!-- 操作按钮区 -->
-        <div class="action-buttons">
-          <!-- 等待开始状态 -->
-          <button 
-            v-if="normalizedGamePhase === 'WAITING'"
-            class="btn btn-primary"
-            @click="handleStartGame"
-          >
-            开始游戏
-          </button>
-
-          <!-- 选色抽牌阶段 -->
-          <div v-if="normalizedSubPhase === 'DRAW_PHASE' && isMyTurn" class="draw-phase">
-            <p>请选择要抽取的颜色：</p>
-            <div class="color-card-buttons">
-              <button
-                v-for="count in colorCounts"
-                :key="count.color"
-                class="color-card-button"
-                :disabled="count.count === 0"
-                @click="handleSelectColor(count.color)"
-              >
-                <span class="color-card-count">剩余 {{ count.count }}</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- 判定阶段 -->
-          <!-- 判定阶段 -->
-          <div v-if="normalizedSubPhase === 'ACTION_PHASE' && isMyTurn" class="action-phase">
-            <p v-if="!selectedPublicCard">请先选择一张公共牌</p>
-            <template v-else>
-              <p class="selected-label">已选择公牌</p>
-              <div
-                class="selected-card-visual card-mini"
-                :class="getColorClass(selectedPublicCard.color)"
-                :style="{ backgroundColor: getColorValue(selectedPublicCard.color) }"
-              >
-                <span class="card-number-small">{{ selectedPublicCard.number }}</span>
-                <div class="point-dots">
-                  <span v-for="dot in getPointFromNumber(selectedPublicCard.number)" :key="dot" class="point-dot"></span>
-                </div>
-              </div>
-              <div class="judge-buttons">
-                <button
-                  class="btn btn-secondary"
-                  @click="handleJudgeByPosition"
-                >
-                  位置判定
-                </button>
-                <button
-                  class="btn btn-secondary"
-                  @click="startPointJudge"
-                >
-                  点数判定
-                </button>
-              </div>
-            </template>
-          </div>
-
-          <!-- 提交猜测按钮 -->
-          <button
-            v-if="normalizedGamePhase === 'PLAYING' || normalizedGamePhase === 'WAITING'"
-            class="btn btn-danger"
-            @click="showGuessModal = true"
-          >
-            提交猜测
-          </button>
-
-          <!-- 房主跳过按钮 -->
-          <button 
-            v-if="isHost && normalizedSubPhase === 'ACTION_PHASE'"
-            class="btn btn-warning"
-            @click="handleSkipTurn"
-          >
-            跳过本轮
-          </button>
-        </div>
-
-        <!-- 游戏结束信息 -->
-        <div v-if="gameState?.gameOverInfo" class="game-over-info">
-          <h3>游戏结束</h3>
-          <p v-if="gameState.gameOverInfo.winnerName">
-            🎉 {{ gameState.gameOverInfo.winnerName }} 获胜！
-          </p>
-          <p v-else>
-            🤝 平局！
-          </p>
-        </div>
-
-        <!-- 个人线索区 -->
-        <div v-if="currentPlayer?.clues?.length" class="my-clues-section">
-          <h3>🧩 线索</h3>
+    <!-- 主游戏区：中间保持原有布局与宽度，左右两侧空白区各挂一栏 -->
+    <main class="game-layout">
+      <!-- 左侧空白区：个人线索栏（原在右侧操作面板内） -->
+      <aside class="side-rail rail-left">
+        <div v-if="currentPlayer?.clues?.length" class="rail-card clue-card">
+          <h3 class="rail-title">🧩 线索</h3>
           <div class="my-clue-list">
             <div
               v-for="clue in currentPlayer.clues.slice().reverse()"
@@ -218,16 +57,223 @@
             </div>
           </div>
         </div>
+        <section v-else class="rail-card clue-card">
+          <h3 class="rail-title">🧩 线索</h3>
+          <p class="rail-empty">还没有线索<br />完成一次判定后显示</p>
+        </section>
       </aside>
 
-      <!-- 备选区表格（跨两列） -->
-      <section class="candidate-section">
-        <CandidateTable
-          :selectedNumbers="guessForm"
-          :revealedCards="revealedCards"
-          @select-number="handleCandidateSelect"
-        />
-      </section>
+      <div class="game-main">
+        <!-- 左侧：牌区和玩家手牌 -->
+        <div class="left-panel">
+          <!-- 公共牌区 -->
+          <section class="public-section">
+            <PublicCards 
+              :publicCards="displayedPublicCards"
+              :clickable="isMyTurn && normalizedSubPhase === 'ACTION_PHASE'"
+              :attract="isMyTurn && normalizedSubPhase === 'ACTION_PHASE' && !selectedPublicCard"
+              @select="handlePublicCardSelect"
+            />
+          </section>
+
+          <!-- 其他玩家手牌（合并到单框） -->
+          <section class="other-players-section">
+            <div class="other-players-container">
+              <div
+                v-for="player in orderedOtherPlayers"
+                :key="player.playerId"
+                class="other-player-row"
+              >
+                <div class="opl-name-wrap" :class="{ 'active-turn': gameState?.currentTurnPlayerId === player.playerId }">
+                  <span class="opl-name">{{ player.playerName }}</span>
+                  <span v-if="player.isBot" class="opl-bot-badge">🤖</span>
+                  <span v-if="gameState?.currentTurnPlayerId === player.playerId" class="opl-turn-icon">⚡</span>
+                </div>
+                <div class="cards">
+                  <div
+                    v-for="card in [...player.hand].sort((a, b) => a.number - b.number)"
+                    :key="card.id"
+                    class="card card-base"
+                    :class="getColorClass(card.color)"
+                    :style="{ backgroundColor: getColorValue(card.color) }"
+                  >
+                    <div class="card-content">
+                      <span class="card-number">{{ card.number }}</span>
+                      <div class="point-dots">
+                        <span v-for="dot in getPointFromNumber(card.number)" :key="dot" class="point-dot"></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 自己的手牌 -->
+          <section class="my-hand-section">
+            <PlayerHand
+              v-if="currentPlayer"
+              :player="currentPlayer"
+              :isMe="true"
+              :selectedNumbers="guessForm"
+              :pointJudgeMode="pointJudgeMode"
+              @commit-number="handleHandNumberCommit"
+              @point-judge-select="handlePointJudgeSelect"
+            />
+            <div v-if="pointJudgeMode" class="point-judge-hint">
+              👆 点击一张手牌选择目标颜色进行点数判定
+            </div>
+          </section>
+
+        </div>
+
+        <!-- 右侧：操作栏 -->
+        <aside class="right-panel" :class="{ 'is-my-turn': isMyActiveTurn }">
+          <div class="turn-indicator" :class="isMyActiveTurn ? 'is-mine' : 'is-other'">
+            <div v-if="isMyActiveTurn" class="my-turn">
+              <span class="pulse-dot"></span>
+              <span class="my-turn-main">轮到你了！</span>
+              <span class="my-turn-sub">{{ myTurnHint }}</span>
+            </div>
+            <div v-else class="other-turn">
+              <template v-if="normalizedGamePhase === 'GAME_OVER'">本局已结束</template>
+              <template v-else-if="normalizedGamePhase === 'WAITING'">等待房主开始游戏</template>
+              <template v-else-if="normalizedSubPhase === 'PAUSED'">⏸ 当前玩家已断线，牌局暂停</template>
+              <template v-else-if="isBotTurn">🤖 {{ getCurrentPlayerName }} 正在思考…</template>
+              <template v-else>等待 {{ getCurrentPlayerName }} 操作…</template>
+            </div>
+          </div>
+
+          <!-- 回合步骤条：抽牌 → 选牌 → 判定，两个阶段共用同一条，随阶段推进 -->
+          <div
+            v-if="isMyActiveTurn && (normalizedSubPhase === 'DRAW_PHASE' || normalizedSubPhase === 'ACTION_PHASE')"
+            class="step-bar"
+          >
+            <div class="step" :class="stepClass(1)">
+              <span class="step-index">{{ currentStep > 1 ? '✓' : '1' }}</span>
+              <span class="step-label">抽牌</span>
+            </div>
+            <span class="step-arrow">→</span>
+            <div class="step" :class="stepClass(2)">
+              <span class="step-index">{{ currentStep > 2 ? '✓' : '2' }}</span>
+              <span class="step-label">选牌</span>
+            </div>
+            <span class="step-arrow">→</span>
+            <div class="step" :class="stepClass(3)">
+              <span class="step-index">3</span>
+              <span class="step-label">判定</span>
+            </div>
+          </div>
+
+          <!-- 操作按钮区 -->
+          <div class="action-buttons">
+            <!-- 等待开始状态 -->
+            <button 
+              v-if="normalizedGamePhase === 'WAITING'"
+              class="btn btn-primary"
+              @click="handleStartGame"
+            >
+              开始游戏
+            </button>
+
+            <!-- 选色抽牌阶段 -->
+            <div v-if="normalizedSubPhase === 'DRAW_PHASE' && isMyActiveTurn" class="draw-phase">
+              <div class="color-card-buttons">
+                <button
+                  v-for="count in colorCounts"
+                  :key="count.color"
+                  class="color-card-button"
+                  :disabled="count.count === 0"
+                  @click="handleSelectColor(count.color)"
+                >
+                  <span class="color-card-name">{{ count.color }}</span>
+                  <span class="color-card-count">{{ count.count }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 判定阶段 -->
+            <div v-if="normalizedSubPhase === 'ACTION_PHASE' && isMyActiveTurn" class="action-phase">
+              <template v-if="selectedPublicCard">
+                <div
+                  class="selected-card-visual card-mini"
+                  :class="getColorClass(selectedPublicCard.color)"
+                  :style="{ backgroundColor: getColorValue(selectedPublicCard.color) }"
+                >
+                  <span class="card-number-small">{{ selectedPublicCard.number }}</span>
+                  <div class="point-dots">
+                    <span v-for="dot in getPointFromNumber(selectedPublicCard.number)" :key="dot" class="point-dot"></span>
+                  </div>
+                </div>
+              </template>
+              <div class="judge-buttons">
+                <button
+                  class="btn btn-secondary"
+                  :disabled="!selectedPublicCard"
+                  @click="handleJudgeByPosition"
+                >
+                  位置判定
+                </button>
+                <button
+                  class="btn btn-secondary"
+                  :class="{ 'is-picking': pointJudgeMode }"
+                  :disabled="!selectedPublicCard"
+                  @click="startPointJudge"
+                >
+                  {{ pointJudgeMode ? '点一张手牌' : '点数判定' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- 提交猜测按钮 -->
+            <button
+              v-if="normalizedGamePhase === 'PLAYING' || normalizedGamePhase === 'WAITING'"
+              class="btn btn-danger"
+              @click="showGuessModal = true"
+            >
+              提交猜测
+            </button>
+
+            <!-- 房主跳过按钮 -->
+            <button 
+              v-if="isHost && normalizedSubPhase === 'ACTION_PHASE' && normalizedGamePhase === 'PLAYING'"
+              class="btn btn-warning"
+              @click="handleSkipTurn"
+            >
+              跳过本轮
+            </button>
+          </div>
+
+          <!-- 游戏结束信息 -->
+          <div v-if="gameState?.gameOverInfo" class="game-over-info">
+            <h3>游戏结束</h3>
+            <p v-if="gameState.gameOverInfo.winnerName">
+              🎉 {{ gameState.gameOverInfo.winnerName }} 获胜！
+            </p>
+            <p v-else>
+              🤝 平局！
+            </p>
+          </div>
+
+        </aside>
+
+        <!-- 备选区表格（跨两列） -->
+        <section class="candidate-section">
+          <CandidateTable
+            :selectedNumbers="guessForm"
+            :revealedCards="revealedCards"
+            @select-number="handleCandidateSelect"
+          />
+        </section>
+      </div>
+
+      <!-- 右侧空白区：预留给聊天室 -->
+      <aside class="side-rail rail-right">
+        <section class="rail-card chat-card">
+          <h3 class="rail-title">💬 聊天室</h3>
+          <p class="rail-empty">文字聊天与语音通话<br />功能开发中，此处预留</p>
+        </section>
+      </aside>
     </main>
 
     <!-- 猜测弹窗（直接用手牌区已填的数字） -->
@@ -369,11 +415,43 @@ const orderedOtherPlayers = computed(() => {
 const isMyTurn = computed(() => gameStore.isMyTurn);
 const normalizedGamePhase = computed(() => String(gameState.value?.gamePhase || '').toUpperCase());
 const normalizedSubPhase = computed(() => String(gameState.value?.subPhase || '').toUpperCase());
+// 真正「该我操作」：牌局进行中且当前回合是自己（等待/结束阶段不算）
+const isMyActiveTurn = computed(() => isMyTurn.value && normalizedGamePhase.value === 'PLAYING');
 
 const getCurrentPlayerName = computed(() => {
   if (!gameState.value?.currentTurnPlayerId) return '';
   const player = gameState.value.players[gameState.value.currentTurnPlayerId];
   return player?.playerName || '';
+});
+
+const isBotTurn = computed(() => {
+  const pid = gameState.value?.currentTurnPlayerId;
+  if (!pid) return false;
+  return !!gameState.value?.players?.[pid]?.isBot;
+});
+
+// 当前进行到第几步：1 抽牌 / 2 选牌 / 3 判定；0 表示当前不在行动阶段
+const currentStep = computed(() => {
+  if (!isMyActiveTurn.value) return 0;
+  const sub = normalizedSubPhase.value;
+  if (sub === 'DRAW_PHASE') return 1;
+  if (sub === 'ACTION_PHASE') return selectedPublicCard.value ? 3 : 2;
+  return 0;
+});
+
+const stepClass = (n: number) => ({
+  'step-active': currentStep.value === n,
+  'step-done': currentStep.value > n,
+});
+
+const myTurnHint = computed(() => {
+  const sub = normalizedSubPhase.value;
+  if (sub === 'DRAW_PHASE') return '先选一种颜色抽牌';
+  if (sub === 'ACTION_PHASE') {
+    return selectedPublicCard.value ? '已选公牌，请选择判定方式' : '请先在左侧点选一张公牌';
+  }
+  if (sub === 'JUDGE_RESULT') return '判定结算中…';
+  return '';
 });
 
 const colorCounts = computed(() => {
@@ -535,7 +613,7 @@ const handleJudgeByPosition = () => {
 
 const startPointJudge = () => {
   if (!selectedPublicCard.value) return;
-  pointJudgeMode.value = true;
+  pointJudgeMode.value = !pointJudgeMode.value;
 };
 
 const handlePointJudgeSelect = (color: Color) => {
@@ -641,18 +719,25 @@ onUnmounted(() => {
 
 <style scoped>
 .game-room {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 20px;
+  /* 全宽：中间游戏区保持原有宽度并居中，左右空白区各挂一栏 */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f2f4f8;
 }
 
 .game-header {
+  /* 标题栏横向铺满整屏 */
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 2px solid #e0e0e0;
+  padding: 14px 28px;
+  background: #ffffff;
+  border-bottom: 1px solid #e3e7ee;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.05);
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .game-header h1 {
@@ -698,10 +783,80 @@ onUnmounted(() => {
   background: #e65100;
 }
 
+/* 三栏：左空白（线索） | 中间原有游戏区 | 右空白（预留聊天室）
+   两侧等宽、中间固定上限 1400px，保证原有元素仍在屏幕正中 */
+.game-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(0, 1200px) minmax(180px, 1fr);
+  gap: 20px;
+  padding: 12px 20px 16px;
+  align-items: stretch;
+}
+
+.side-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 96px);
+}
+
+.rail-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 12px;
+  text-align: left;
+}
+
+.clue-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.rail-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #37474f;
+  flex-shrink: 0;
+}
+
+.rail-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.8;
+  color: #9aa7b4;
+  text-align: center;
+}
+
+/* 线索栏的空态靠上，避免高栏里文字飘在正中 */
+.clue-card .rail-empty {
+  align-items: flex-start;
+  padding-top: 4px;
+}
+
+.chat-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px dashed #d5dde7;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: none;
+}
+
+/* 中间游戏区：沿用原有 3:1 分栏 */
 .game-main {
   display: grid;
   grid-template-columns: 3fr 1fr; /* ← 3:1 分栏，修改数值即可调整比例 */
   gap: 24px;
+  align-items: stretch;
 }
 
 /* 备选区跨两列占满全宽 */
@@ -715,9 +870,11 @@ onUnmounted(() => {
   gap: 20px;
 }
 
+/* 右侧操作区：撑满行高，与左侧三块（公牌 / 其他玩家 / 我的手牌）上下齐平 */
 .right-panel {
-  border-radius: 8px;
-  height: fit-content;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   background: white;
   padding: 12px;
   border-radius: 8px;
@@ -798,6 +955,11 @@ section + section {
   flex-shrink: 0;
 }
 
+.opl-bot-badge {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .other-player-row .cards {
   display: flex;
   gap: 8px;
@@ -826,10 +988,11 @@ section + section {
 }
 
 .turn-indicator {
-  margin-bottom: 20px;
-  padding: 12px;
+  margin-bottom: 12px;
+  padding: 10px;
   border-radius: 6px;
   text-align: center;
+  flex-shrink: 0;
 }
 
 .deck-area {
@@ -933,23 +1096,29 @@ section + section {
 
 .color-card-buttons {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 10px;
+  justify-content: center;
 }
 
 .color-card-button {
+  position: relative;
   border: none;
-  border-radius: 14px;
-  padding: 18px 14px;
+  border-radius: 6px;
+  padding: 12px 24px;
   color: white;
   cursor: pointer;
   text-align: center;
-  min-height: 72px;
+  font-size: 14px;
+  font-weight: bold;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.14);
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  width: 100%;
 }
 
 .color-card-button:hover:not(:disabled) {
@@ -985,21 +1154,13 @@ section + section {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 12px;
+  margin-top: 0;
 }
 
 .draw-phase, .action-phase {
-  background: white;
-  padding: 16px;
-  border-radius: 6px;
-  margin-bottom: 12px;
-}
-
-.selected-label {
-  text-align: center;
-  font-weight: 600;
-  margin-bottom: 10px;
-  color: #555;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 0;
 }
 
 .selected-card-visual {
@@ -1070,37 +1231,27 @@ section + section {
   color: #e65100;
 }
 
-/* 右侧栏个人线索卡片 */
-.my-clues-section {
-  margin-top: 16px;
-  background: white;
-  padding: 12px;
-  border-radius: 6px;
-}
-
-.my-clues-section h3 {
-  margin: 0 0 12px 0;
-  font-size: 16px;
-  color: #333;
-}
-
+/* 左侧栏个人线索卡片（窄列适配，超出可滚动） */
 .my-clue-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .my-clue-card {
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: #f0f4ff;
   border-left: 3px solid #42a5f5;
   border-radius: 4px;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.6;
+  word-break: break-word;
 }
 
 .my-clue-card:first-child {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
   background: #e3f2fd;
   border-left-color: #1976d2;
@@ -1198,4 +1349,226 @@ section + section {
 .result-correct { text-align: center; color: #2e7d32; font-weight: 700; }
 .result-wrong { text-align: center; color: #c62828; }
 .result-actions { display: flex; gap: 12px; justify-content: center; margin-top: 16px; }
+
+/* ===== 轮次视觉指引 ===== */
+
+/* 右侧操作栏：轮到本人时整栏高亮 */
+.right-panel {
+  position: relative;
+  border: 2px solid transparent;
+  transition: border-color .3s ease, box-shadow .3s ease, transform .3s ease;
+}
+
+.right-panel.is-my-turn {
+  border-color: #ff9800;
+  animation: panel-glow 2.2s ease-in-out infinite;
+}
+
+@keyframes panel-glow {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255, 152, 0, .12), 0 6px 18px rgba(255, 152, 0, .28); }
+  50%      { box-shadow: 0 0 0 7px rgba(255, 152, 0, .22), 0 10px 26px rgba(255, 152, 0, .42); }
+}
+
+@keyframes pulse-ring {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.6); opacity: .55; }
+}
+
+/* 回合横幅 */
+.turn-indicator.is-mine {
+  background: linear-gradient(135deg, #ff9800, #f57c00);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(255, 152, 0, .35);
+}
+
+.turn-indicator.is-mine .my-turn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: #fff;
+}
+
+.my-turn-main {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.my-turn-main::after {
+  content: '';
+  display: block;
+  margin: 4px auto 0;
+  width: 68%;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .75);
+}
+
+.my-turn-sub {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: .95;
+}
+
+.turn-indicator.is-mine .pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  animation: pulse-ring 1.4s ease-in-out infinite;
+}
+
+.turn-indicator.is-other {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.turn-indicator.is-other .other-turn {
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 步骤条 */
+.step-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin-bottom: 10px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  background: #f5f8fc;
+  flex-shrink: 0;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #f1f3f5;
+  color: #90a4ae;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all .25s ease;
+}
+
+.step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #cfd8dc;
+  color: #fff;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.step-label {
+  white-space: nowrap;
+}
+
+.step.step-active {
+  background: #fff3e0;
+  color: #e65100;
+  box-shadow: 0 0 0 2px rgba(255, 152, 0, .35);
+}
+
+.step.step-active .step-index {
+  background: #fb8c00;
+}
+
+.step.step-done {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.step.step-done .step-index {
+  background: #43a047;
+}
+
+.step-arrow {
+  color: #b0bec5;
+  font-size: 12px;
+}
+
+/* 抽牌按钮：颜色名居中，剩余张数做成右上角标（省上下高度） */
+.color-card-buttons {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.color-card-name {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.color-card-button .color-card-count {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #263238;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  opacity: 1;
+}
+
+.color-card-button:disabled .color-card-count {
+  background: rgba(255, 255, 255, 0.6);
+  color: #78909c;
+}
+
+/* 点数判定进行中 */
+.btn.is-picking {
+  background: #ff9800;
+  box-shadow: 0 0 0 3px rgba(255, 152, 0, .35);
+}
+
+/* 尊重系统「减少动态效果」设置 */
+/* 屏幕不足以容纳「1400 中间区 + 两侧栏」时退化为单列，线索与聊天栏顺次下移
+   （1600px 以下中间区已窄于原始设计宽度，故在此断点收起两侧栏） */
+@media (max-width: 1600px) {
+  .game-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .game-main {
+    order: -1;
+  }
+
+  .side-rail {
+    max-height: none;
+  }
+
+  .rail-card {
+    min-height: 72px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .right-panel.is-my-turn,
+  .turn-indicator.is-mine .pulse-dot {
+    animation: none;
+  }
+}
 </style>

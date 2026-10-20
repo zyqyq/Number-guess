@@ -77,6 +77,14 @@
 - 所有颜色牌堆均耗尽：牌局结束，判定为平局。
 - 房主可以在判定阶段执行 `SkipTurn` 跳过当前回合，也可以重置已结束的牌局或解散房间。
 
+### 2.5 机器人玩家
+
+- 在等待大厅，房主可以通过「添加机器人」补齐人数，也可以移除已添加的机器人；房间人数上限仍为 4，机器人计入这 4 个名额。
+- 机器人不建立 WebSocket 连接，`Player.isBot` 为 `true`，昵称按 `机器人1`、`机器人2`……递增生成。
+- 轮到机器人时，服务端驱动任务会停顿 0.6~1.8 秒后代替它行动：从仍有存牌的颜色中随机抽一张、随机选定一张公共牌，再随机选择位置判定或点数判定（点数判定随机选一种手牌颜色）。
+- 机器人**不会**提交猜测，因此牌局只能由真人猜中或牌堆耗尽结束。
+- 机器人随牌局状态推进，重置牌局、解散房间或牌局结束时会自动停止；新开一局会重新拉起驱动。
+
 ## 3. 程序配置与启动
 
 ### 3.1 环境要求
@@ -88,17 +96,15 @@
 ### 3.2 一键配置
 
 ```bash
-cd guess-number-client
 chmod +x setup.sh start.sh
 ./setup.sh
 ```
 
-`setup.sh` 会检查 Git、Node.js、npm 和 Python，安装前端依赖，并执行 `npm run build` 生成 `dist/`。后端依赖清单位于 [backend/requirements.txt](guess-number-client/backend/requirements.txt)。
+`setup.sh` 会检查 Git、Node.js、npm 和 Python，安装前端依赖，并执行 `npm run build` 生成 `dist/`。后端依赖清单位于 [backend/requirements.txt](/backend/requirements.txt)。
 
 ### 3.3 启动开发环境
 
 ```bash
-cd guess-number-client
 ./start.sh
 ```
 
@@ -118,18 +124,15 @@ cd guess-number-client
 
 ```bash
 # 第 1 步：构建前端（仅源码改动后需要执行，产物输出到 dist/）
-cd guess-number-client
 npm run build
 
 # 第 2 步：启动生产服务（0.0.0.0 监听，局域网其他设备可直接访问）
-cd guess-number-client
 python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 `python3` 需替换为已安装后端依赖的解释器。使用虚拟环境（`venv/` 损坏时先 `rm -rf venv` 重建）：
 
 ```bash
-cd guess-number-client
 python3 -m venv venv
 ./venv/bin/pip install -r backend/requirements.txt
 ./venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
@@ -144,15 +147,13 @@ python3 -m venv venv
 
 前端 WebSocket 地址默认跟随 `window.location.host` 动态拼接（见 `src/services/websocket.ts` 与两个 view），设备从哪个地址打开页面就会连回同一后端，无需额外配置；仅当 WebSocket 需要独立主机时才设置 `VITE_WS_HOST`。
 
-> 本机（Mac mini）当前使用受管 Python 3.13 环境运行生产服务，已验证指令：
-> `cd /Users/zyqyq/Program/Number-guess/guess-number-client && /Users/zyqyq/.workbuddy/binaries/python/envs/number-guess/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000`
+
 
 ### 3.5 分别启动
 
 前端（开发服务器，支持热更新）：
 
 ```bash
-cd guess-number-client
 npm install
 npm run dev
 ```
@@ -160,7 +161,6 @@ npm run dev
 后端：
 
 ```bash
-cd guess-number-client
 python3 -m venv venv
 source venv/bin/activate
 pip install -r backend/requirements.txt
@@ -186,6 +186,8 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 - `stores/game.ts`：保存服务端推送的游戏快照和当前玩家身份。
 - `services/websocket.ts`：建立 WebSocket、发送指令、接收状态事件。
 - `composables/gameLogic.ts`：处理自己的手牌隐藏、线索计算和候选区展示逻辑。
+- 轮次指引：右侧操作栏的轮次高亮、「① 抽牌 → ② 选牌 → ③ 判定」统一步骤条（随阶段推进打勾），全部为模板与 CSS 实现，不改通信协议。
+- 页面布局（16:9 全宽）：标题栏铺满整屏，中间游戏区保持原有宽度并居中，左右两侧空白区各挂一栏——左侧为个人线索栏，右侧预留给聊天室；右侧操作区高度与左侧三个板块（公牌 / 其他玩家 / 手牌）上下齐平。屏幕窄于 1600px 时退化为单列，两栏顺次下移。
 
 ### 4.3 后端状态与同步
 
@@ -195,7 +197,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 进行中包含 `DRAW_PHASE`、`ACTION_PHASE`、`JUDGE_RESULT` 和断线时的 `PAUSED`。每次抽牌、判定、回合切换或猜测后，服务端通过 `Event_StateUpdate` 广播游戏快照；新连接通过 `Event_SyncFullState` 同步当前状态。
 
-主要客户端指令包括：`StartGame`、`SelectColorToDraw`、`SelectPublicCard`、`JudgeByPosition`、`JudgeByPoint`、`SubmitGuess`、`SkipTurn`、`ResetGame` 和 `DissolveRoom`。
+主要客户端指令包括：`StartGame`、`SelectColorToDraw`、`SelectPublicCard`、`DeselectPublicCard`、`JudgeByPosition`、`JudgeByPoint`、`SubmitGuess`、`SkipTurn`、`AddBot`、`RemoveBot`、`ResetGame`、`KickPlayer` 和 `DissolveRoom`。
 
 ### 4.4 断线处理
 
@@ -204,7 +206,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ## 5. 目录结构
 
 ```text
-guess-number-client/
+/
 ├── backend/
 │   ├── main.py                 # FastAPI、WebSocket 和游戏规则
 │   └── requirements.txt        # Python 依赖

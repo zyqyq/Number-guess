@@ -30,6 +30,7 @@ export interface Player {
   playerName: string;
   isAlive: boolean;
   isOnline: boolean;
+  isBot?: boolean;
   hand: Card[]; // 包含真实数字
   clues: Clue[];
 }
@@ -94,7 +95,9 @@ export type ClientCommand =
   | { cmd: 'SubmitGuess'; guesses: number[] }
   | { cmd: 'ResetGame' }
   | { cmd: 'DissolveRoom' }
-  | { cmd: 'KickPlayer'; playerId: string };
+  | { cmd: 'KickPlayer'; playerId: string }
+  | { cmd: 'AddBot' }
+  | { cmd: 'RemoveBot'; playerId: string };
 
 // WebSocket 服务端事件
 export type ServerEvent =
