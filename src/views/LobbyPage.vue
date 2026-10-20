@@ -80,6 +80,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { wsService } from '@/services/websocket';
+import { getClientId } from '@/services/presence';
 import { useGameStore } from '@/stores/game';
 
 const router = useRouter();
@@ -148,6 +149,20 @@ onMounted(() => {
     }
   });
   
+  // 房间被房主或管理员关闭
+  wsService.setRoomClosedCallback(() => {
+    alert('房间已被关闭');
+    wsService.disconnect();
+    router.push('/');
+  });
+
+  // 服务端拒绝接入（如保留房间号）：提示后回首页，不再自动重连
+  wsService.setFatalCallback((message: string) => {
+    wsService.disconnect();
+    alert(message);
+    router.push('/');
+  });
+
   // 如果已有连接（从 GameRoom 重置后跳转而来），直接读取当前状态
   if (wsService.getStatus() === 'open') {
     const currentState = gameStore.gameState;
@@ -156,7 +171,7 @@ onMounted(() => {
     }
   } else {
     // 首次进入或连接已断开，重新连接（WS 地址跟随当前访问主机，支持局域网其他设备接入）
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}`;
+    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}?clientId=${getClientId()}`;
     wsService.connectWithUrl(wsUrl);
   }
 });

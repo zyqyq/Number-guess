@@ -348,6 +348,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useGameStore } from '@/stores/game';
 import { wsService } from '@/services/websocket';
+import { getClientId } from '@/services/presence';
 import PublicCards from '@/components/PublicCards.vue';
 import PlayerHand from '@/components/PlayerHand.vue';
 import CandidateTable from '@/components/CandidateTable.vue';
@@ -704,10 +705,14 @@ onMounted(() => {
     alert('房间已解散');
     exitRoom();
   });
+  wsService.setFatalCallback((message: string) => {
+    alert(message);
+    exitRoom();
+  });
   
   if (wsService.getStatus() !== 'open') {
     // WS 地址跟随当前访问主机，支持局域网其他设备接入
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}`;
+    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}?clientId=${getClientId()}`;
     wsService.connectWithUrl(wsUrl);
   }
 });

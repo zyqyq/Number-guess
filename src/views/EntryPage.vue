@@ -28,9 +28,10 @@
           v-model="playerName" 
           placeholder="请输入你的昵称（最多8 个字符）"
           maxlength="8"
-          @input="validatePlayerName"
+          @input="validatePlayerName(); checkNicknameHint()"
         />
         <span v-if="playerNameError" class="error-msg">{{ playerNameError }}</span>
+        <span v-else-if="nicknameWarn" class="warn-msg">{{ nicknameWarn }}</span>
       </div>
       
       <!-- 创建 / 加入 按钮（垂直排列） -->
@@ -48,9 +49,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { isValidRoomId, isValidPlayerName } from '@/utils/game';
 import { useRouter, useRoute } from 'vue-router';
+import { connectPresence } from '@/services/presence';
+
+// 管理入口口令：默认值与后端一致，实际以 /api/admin/access 返回为准
+// （口令已改由 config.json 决定，本机访问时可从后端同步）
+const ADMIN_USERNAME = ref('adminzyq');
+const ADMIN_ROOM = ref('6666');
+const bannedWords = ref<string[]>([]);
+const nicknameWarn = ref('');
+let stopPresence: (() => void) | null = null;
 
 const router = useRouter();
 
@@ -62,6 +72,21 @@ const playerNameError = ref('');
 const shakeButton = ref(false);
 const feedbackMsg = ref('');
 const feedbackType = ref<'success' | 'error'>('success');
+
+// 昵称违禁词本地预检（真正拦截在后端握手处）
+const checkNicknameHint = () => {
+  const name = playerName.value.trim();
+  if (!name || bannedWords.value.length === 0) {
+    nicknameWarn.value = '';
+    return;
+  }
+  const squeezed = name.toLowerCase().replace(/\s+/g, '');
+  const hit = bannedWords.value.find((word) => {
+    const needle = word.toLowerCase().replace(/\s+/g, '');
+    return needle.length > 0 && squeezed.includes(needle);
+  });
+  nicknameWarn.value = hit ? `昵称可能包含违禁内容：${hit}` : '';
+};
 
 const route = useRoute();
 
@@ -93,6 +118,9 @@ const savePlayerName = (name: string) => {
 };
 
 onMounted(async () => {
+  // 在线登记：让管理后台能看到「谁打开了页面」（不参与游戏）
+  stopPresence = connectPresence();
+
   // 从 URL 预置房间号
   const urlRoom = String(route.query.roomId || '').trim();
   if (urlRoom) {
@@ -111,15 +139,35 @@ onMounted(async () => {
     }
   } catch (e) {}
 
-  // 查询后端房间列表；若仅存在 1 个房间则自动预置并只读
+  // 查询后端房间列表；若仅存在 1 个房间则自动预填（仍可编辑，方便输入管理入口房间号）
   try {
     const res = await fetch('/api/rooms');
     if (res.ok) {
       const data = await res.json();
       if (data.rooms && data.rooms.length === 1 && !roomId.value) {
         roomId.value = String(data.rooms[0].roomId || '');
-        roomReadonly.value = true;
       }
+    }
+  } catch (e) {
+    // ignore network errors
+  }
+
+  // 同步管理入口口令与违禁词库（本机访问才拿得到口令；局域网设备 403 时保持默认值）
+  try {
+    const accessRes = await fetch('/api/admin/access', { cache: 'no-store' });
+    if (accessRes.ok) {
+      const access = await accessRes.json();
+      if (access.adminUser) ADMIN_USERNAME.value = String(access.adminUser);
+      if (access.adminRoom) ADMIN_ROOM.value = String(access.adminRoom);
+    }
+  } catch (e) {
+    // ignore network errors
+  }
+  try {
+    const wordsRes = await fetch('/api/banned-words', { cache: 'no-store' });
+    if (wordsRes.ok) {
+      const data = await wordsRes.json();
+      bannedWords.value = Array.isArray(data.words) ? data.words.map(String) : [];
     }
   } catch (e) {
     // ignore network errors
@@ -164,6 +212,27 @@ const handleJoinRoom = async () => {
     triggerShake();
     return;
   }
+
+  // 管理入口：昵称 + 保留房间号同时匹配时进入管理后台，不建立游戏连接
+  if (targetRoomId === ADMIN_ROOM.value && playerName.value.trim() === ADMIN_USERNAME.value) {
+    savePlayerName(playerName.value.trim());
+    showFeedback('正在进入管理后台…', 'success');
+    stopPresence?.();
+    stopPresence = null;
+    setTimeout(() => {
+      router.push({ path: '/admin' });
+    }, 300);
+    return;
+  }
+
+  // 保留房间号（管理入口）不允许普通昵称占用
+  if (targetRoomId === ADMIN_ROOM.value) {
+    roomIdError.value = '该房间号已保留';
+    showFeedback('该房间号为管理入口，无法加入', 'error');
+    triggerShake();
+    return;
+  }
+
   savePlayerName(playerName.value.trim());
   showFeedback('正在加入房间...', 'success');
   setTimeout(() => {
@@ -172,7 +241,12 @@ const handleJoinRoom = async () => {
 };
 
 const generateRoomId = (): string => {
-  return String(Math.floor(1000 + Math.random() * 9000));
+  // 管理入口保留号，随机生成时跳过
+  let id = String(Math.floor(1000 + Math.random() * 9000));
+  while (id === ADMIN_ROOM.value) {
+    id = String(Math.floor(1000 + Math.random() * 9000));
+  }
+  return id;
 };
 
 const triggerShake = () => {
@@ -189,6 +263,11 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
     feedbackMsg.value = '';
   }, 3000);
 };
+
+onUnmounted(() => {
+  stopPresence?.();
+  stopPresence = null;
+});
 </script>
 
 <style scoped>
@@ -277,6 +356,13 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
 .error-msg {
   display: block;
   color: #f44336;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.warn-msg {
+  display: block;
+  color: #b45309;
   font-size: 12px;
   margin-top: 4px;
 }

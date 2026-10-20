@@ -1,0 +1,11 @@
+{
+  "admin": {
+    "username": "adminzyq",
+    "room": "6666",
+    "localOnly": true
+  },
+  "security": {
+    "ipBlacklist": [],
+    "bannedWords": []
+  }
+}

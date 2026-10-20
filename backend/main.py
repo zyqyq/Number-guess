@@ -4,12 +4,22 @@ import asyncio
 import mimetypes
 import os
 import random
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+try:  # 兼容 `python -m uvicorn backend.main:app` 与直接运行两种导入方式
+    from . import admin as admin_module
+    from . import config as app_config
+    from . import registry as term_registry
+except ImportError:  # pragma: no cover
+    import admin as admin_module  # type: ignore
+    import config as app_config  # type: ignore
+    import registry as term_registry  # type: ignore
 
 
 app = FastAPI(title="猜数字桌游", version="1.0.0")
@@ -113,6 +123,10 @@ class GameRoom:
         self.seed = str(uuid.uuid4())[:8]
         self.usedCardNumbers: List[dict] = []
         self.ws_connections: Dict[str, WebSocket] = {}
+        # 房间生命周期时间点（管理后台用来算时长）
+        self.createdAt = time.time()
+        self.gameStartedAt: Optional[float] = None
+        self.gameEndedAt: Optional[float] = None
         # 机器人：不持有 WebSocket，由一个常驻驱动任务轮询当前回合并代为行动
         self.botTask: Optional[asyncio.Task] = None
         self.botSeq = 0
@@ -362,6 +376,7 @@ def check_game_over(room: GameRoom) -> bool:
     all_empty = all(len(room.color_decks.get(c, [])) == 0 for c in Color.ALL)
     if all_empty:
         room.gamePhase = "GAME_OVER"
+        room.gameEndedAt = time.time()
         room.gameOverInfo = {
             "winnerId": None,
             "winnerName": None,
@@ -373,6 +388,7 @@ def check_game_over(room: GameRoom) -> bool:
     alive_players = [player for player in room.players.values() if player.isAlive]
     if len(alive_players) <= 1 and room.gamePhase == "PLAYING":
         room.gamePhase = "GAME_OVER"
+        room.gameEndedAt = time.time()
         winner = alive_players[0] if alive_players else None
         room.gameOverInfo = {
             "winnerId": winner.playerId if winner else None,
@@ -393,6 +409,7 @@ async def next_turn(room: GameRoom):
     alive_ids = [pid for pid, player in room.players.items() if player.isAlive]
     if not alive_ids:
         room.gamePhase = "GAME_OVER"
+        room.gameEndedAt = time.time()
         room.gameOverInfo = {
             "winnerId": None,
             "winnerName": None,
@@ -447,6 +464,8 @@ def start_game(room: GameRoom) -> bool:
     room.roundNumber = 1
     room.gamePhase = "PLAYING"
     room.subPhase = "DRAW_PHASE"
+    room.gameStartedAt = time.time()
+    room.gameEndedAt = None
     room.pendingJudgement = None
     room.gameOverInfo = None
     room.selectedPublicCardId = None
@@ -667,6 +686,7 @@ async def cmd_submit_guess(room: GameRoom, player_id: str, guesses: Optional[Lis
     }
     if correct:
         room.gamePhase = "GAME_OVER"
+        room.gameEndedAt = time.time()
         room.gameOverInfo = {
             "winnerId": player.playerId,
             "winnerName": player.playerName,
@@ -756,35 +776,85 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await cmd_deselect_public_card(room, player_id)
     elif cmd == "ResetGame":
         if player_id == room.hostId:
-            # 重置到等待界面，保持房间号和玩家
-            room.stop_bot_driver()
-            room.gamePhase = "WAITING"
-            room.subPhase = None
-            room.roundNumber = 0
-            room.currentTurnPlayerId = None
-            room.turnOrder = []
-            room.color_decks = {}
-            room.publicCards = []
-            room.removedPublicCardIds = set()
-            room.deckRemainingCount = {color: 0 for color in Color.ALL}
-            room.pendingJudgement = None
-            room.gameOverInfo = None
-            room.selectedPublicCardId = None
-            room.usedCardNumbers = []
-            for p in room.players.values():
-                p.hand = []
-                p.clues = []
-                p.isAlive = True
+            reset_room_state(room)
+            term_registry.log_event(f"房主重置房间 {room.roomId}", "info")
             await room.broadcast_state()
     elif cmd == "DissolveRoom":
         if player_id == room.hostId:
-            room.stop_bot_driver()
-            rooms.pop(room.roomId, None)
-            for pid, ws in list(room.ws_connections.items()):
-                try:
-                    await ws.send_json({"event": "Event_RoomClosed", "payload": {}})
-                except Exception:
-                    pass
+            await admin_close_room(room, by="房主")
+
+
+def reset_room_state(room: GameRoom):
+    """重置到等待界面，保持房间号与玩家（房主重置与管理员重置共用）。"""
+    room.stop_bot_driver()
+    room.gamePhase = "WAITING"
+    room.subPhase = None
+    room.roundNumber = 0
+    room.currentTurnPlayerId = None
+    room.turnOrder = []
+    room.color_decks = {}
+    room.publicCards = []
+    room.removedPublicCardIds = set()
+    room.deckRemainingCount = {color: 0 for color in Color.ALL}
+    room.pendingJudgement = None
+    room.gameOverInfo = None
+    room.selectedPublicCardId = None
+    room.usedCardNumbers = []
+    room.gameStartedAt = None
+    room.gameEndedAt = None
+    for p in room.players.values():
+        p.hand = []
+        p.clues = []
+        p.isAlive = True
+
+
+async def admin_reset_room(room: GameRoom):
+    reset_room_state(room)
+    term_registry.log_event(f"管理员重置房间 {room.roomId}", "warn")
+    await room.broadcast_state()
+
+
+async def admin_close_room(room: GameRoom, by: str = "管理员"):
+    room.stop_bot_driver()
+    rooms.pop(room.roomId, None)
+    term_registry.log_event(f"{by}关闭房间 {room.roomId}", "warn")
+    for pid, ws in list(room.ws_connections.items()):
+        try:
+            await ws.send_json({"event": "Event_RoomClosed", "payload": {}})
+        except Exception:
+            pass
+    for pid in list(room.ws_connections.keys()):
+        await room.send_to_player(pid, "Event_AdminNotice", {"text": "房间已被管理员关闭"})
+    room.ws_connections.clear()
+
+
+async def admin_kick_player(room: GameRoom, player_id: Optional[str]):
+    """管理员把某名玩家移出房间：先按房主踢人逻辑处理，再断其连接。"""
+    if not player_id or player_id not in room.players:
+        return
+    player = room.players[player_id]
+    await cmd_kick_player(room, room.hostId, player_id)
+    term_registry.log_event(f"管理员移出玩家 {player.playerName}（房间 {room.roomId}）", "warn")
+    ws = room.ws_connections.get(player_id)
+    if ws is not None:
+        try:
+            await ws.close(code=4001, reason="admin_kick")
+        except Exception:
+            pass
+        room.ws_connections.pop(player_id, None)
+
+
+async def refresh_after_terminal_kick(room: GameRoom):
+    """终端被强制断开后刷新房间状态。
+
+    玩家的 isOnline 已由管理端置为 False；若断开的正是当前回合玩家，
+    则与普通断线一致进入 PAUSED，等其重连或由管理员继续操作。
+    """
+    if room.gamePhase == "PLAYING" and room.currentTurnPlayerId:
+        current = room.players.get(room.currentTurnPlayerId)
+        if current is not None and not current.isOnline and room.currentTurnPlayerId not in room.ws_connections:
+            room.subPhase = "PAUSED"
+    await room.broadcast_state()
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -803,34 +873,18 @@ async def startup_event():
         print("✅ 前端已构建，可正常访问")
     else:
         print("⚠️  前端未构建，请先运行 setup.sh")
+    print(f"⚙️  配置文件：{app_config.CONFIG_PATH}")
+    print(
+        f"⚙️  管理口令：{app_config.admin_username()} / 房间 {app_config.admin_room()}"
+        f"；仅本机登录：{'开' if app_config.admin_local_only() else '关'}"
+    )
+    print(
+        f"⚙️  IP 黑名单 {len(app_config.ip_entries())} 条；违禁词 {len(app_config.word_entries())} 个"
+    )
 
 
-if os.path.exists(DIST_PATH):
-    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_PATH, "assets")), name="assets")
-
-    @app.get("/")
-    async def read_index():
-        index_path = os.path.join(DIST_PATH, "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return {"error": "前端未构建，请先运行 setup.sh"}
-
-    @app.get("/{path:path}")
-    async def serve_spa(path: str):
-        if path.startswith("assets/"):
-            return FileResponse(os.path.join(DIST_PATH, path))
-        index_path = os.path.join(DIST_PATH, "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return {"error": "页面不存在"}
-else:
-    @app.get("/")
-    async def no_frontend():
-        return {
-            "message": "欢迎使用猜数字桌游 API",
-            "status": "后端运行正常",
-            "notice": "前端尚未构建，请运行 ./setup.sh 完成环境配置",
-        }
+# ---------------------------------------------------------------- API 路由
+# 注意：这些路由必须注册在 SPA 兜底路由 /{path:path} 之前，否则会被 index.html 抢走。
 
 
 @app.get("/api/health")
@@ -853,13 +907,232 @@ async def list_rooms():
     }
 
 
+@app.get("/api/admin/access")
+async def admin_access(request: Request):
+    """管理后台入口校验：默认仅回环地址返回 200，其余一律 403。"""
+    ip = app_config.normalize_ip(request.client.host if request.client else "")
+    if not admin_module.origin_allowed(request):
+        if app_config.is_ip_banned(ip):
+            message = "当前来源 IP 已被加入黑名单，禁止访问管理后台"
+            reason = "ip_banned"
+        else:
+            message = "管理后台仅允许在本机（127.0.0.1 / localhost）访问"
+            reason = "local_only"
+        return JSONResponse(
+            {"ok": False, "reason": reason, "message": message},
+            status_code=403,
+        )
+    return {
+        "ok": True,
+        "adminUser": app_config.admin_username(),
+        "adminRoom": app_config.admin_room(),
+        "localOnly": app_config.admin_local_only(),
+        "serverTime": time.time(),
+    }
+
+
+@app.get("/api/banned-words")
+async def banned_words():
+    """违禁词库（公开只读）：供首页在输入昵称时做本地预检。
+
+    预检只是体验优化，真正的拦截在后端 WebSocket 握手处完成。
+    """
+    return {"words": [str(e.get("word")) for e in app_config.word_entries()]}
+
+
+# ------------------------------------------------------- 管理端 / 终端 WebSocket
+
+
+@app.websocket("/ws/presence/{client_id}")
+async def presence_endpoint(websocket: WebSocket, client_id: str):
+    """欢迎页的轻量在线登记：只用于管理后台展示「连入终端」，不参与游戏。"""
+    await websocket.accept()
+    ip = app_config.normalize_ip(websocket.client.host if websocket.client else "")
+    if app_config.is_ip_banned(ip):
+        banned = app_config.record_ip_hit(ip) or ip
+        term_registry.log_event(f"拒绝黑名单终端连入（{ip}，命中 {banned}）", "warn")
+        await websocket.send_json({"error": "你的 IP 已被禁止连入"})
+        await websocket.close(code=1008, reason="ip_banned")
+        return
+    user_agent = websocket.headers.get("user-agent", "")
+    term_registry.get_or_create(client_id, ip, user_agent, "guest")
+    term_registry.attach_socket(client_id, websocket, "presence")
+    try:
+        while True:
+            message = await websocket.receive_text()
+            if message == "ping":
+                term_registry.touch(client_id)
+    except Exception:
+        pass
+    finally:
+        term_registry.detach_socket(client_id, websocket)
+
+
+@app.websocket("/ws/admin")
+async def admin_endpoint(websocket: WebSocket):
+    # 第一道闸：来源校验（仅本机开关 + IP 黑名单）
+    ip = app_config.normalize_ip(websocket.client.host if websocket.client else "")
+    if not admin_module.origin_allowed_ws(websocket):
+        reason = "ip_banned" if app_config.is_ip_banned(ip) else "local_only"
+        term_registry.log_event(f"拒绝管理端连接：{ip}（{reason}）", "warn")
+        await websocket.close(code=1008, reason=reason)
+        return
+
+    await websocket.accept()
+
+    client_id = websocket.query_params.get("clientId") or f"admin-{uuid.uuid4().hex[:8]}"
+    term_registry.get_or_create(client_id, ip, websocket.headers.get("user-agent", ""), "admin")
+    term_registry.attach_socket(client_id, websocket, "admin")
+
+    # 第二道闸：口令（昵称 + 房间号）
+    try:
+        auth = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except Exception:
+        term_registry.detach_socket(client_id, websocket)
+        await websocket.close(code=1008, reason="auth_timeout")
+        return
+
+    if not admin_module.check_credentials(auth.get("user"), auth.get("room")):
+        term_registry.log_event(f"管理端口令错误（{ip}）", "warn")
+        try:
+            await websocket.send_json({"event": "Event_AdminDenied", "payload": {"reason": "口令错误"}})
+        except Exception:
+            pass
+        term_registry.detach_socket(client_id, websocket)
+        await websocket.close(code=1008, reason="bad_credentials")
+        return
+
+    term_registry.log_event(f"管理员进入后台（{ip}）", "warn")
+    try:
+        await websocket.send_json(
+            {"event": "Event_AdminSnapshot", "payload": admin_module.build_snapshot(rooms)}
+        )
+    except Exception:
+        term_registry.detach_socket(client_id, websocket)
+        return
+
+    async def push_loop():
+        try:
+            while True:
+                await asyncio.sleep(2.0)
+                await websocket.send_json(
+                    {"event": "Event_AdminSnapshot", "payload": admin_module.build_snapshot(rooms)}
+                )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    push_task = asyncio.create_task(push_loop())
+    try:
+        while True:
+            message = await websocket.receive_json()
+            changed = await admin_module.execute_command(rooms, message)
+            if changed:
+                await websocket.send_json(
+                    {"event": "Event_AdminSnapshot", "payload": admin_module.build_snapshot(rooms)}
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        print(f"[admin] 管理端连接异常：{exc}")
+    finally:
+        push_task.cancel()
+        term_registry.detach_socket(client_id, websocket)
+        term_registry.log_event(f"管理员退出后台（{ip}）", "info")
+
+
+# ------------------------------------------------------------ 静态资源与页面
+
+if os.path.exists(DIST_PATH):
+
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_page(request: Request):
+        """直接访问 /admin 时由服务端把关：非本机（或被拉黑）返回 403，本机走 SPA 路由。"""
+        ip = app_config.normalize_ip(request.client.host if request.client else "")
+        if not admin_module.origin_allowed(request):
+            banned = app_config.is_ip_banned(ip)
+            title = "403 · IP 已被封禁" if banned else "403 · 仅限本机访问"
+            detail = (
+                "当前来源 IP 在黑名单中，已被禁止访问管理后台。"
+                if banned
+                else "管理后台仅允许在服务器本机通过 http://localhost:8000/admin 访问。"
+            )
+            return HTMLResponse(
+                f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>{title}</title>
+<style>body{{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+background:#f2f4f8;font-family:-apple-system,"PingFang SC",sans-serif;color:#334155}}
+.card{{background:#fff;padding:40px 48px;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.10);
+text-align:center;max-width:520px}}h1{{margin:0 0 12px;font-size:22px;color:#dc2626}}
+p{{margin:6px 0;line-height:1.7;font-size:14px;color:#64748b}}code{{background:#f1f5f9;
+padding:2px 6px;border-radius:4px;color:#0f172a}}</style></head><body><div class="card">
+<h1>{title}</h1><p>{detail}</p>
+<p>当前来源地址不在允许范围内。</p></div></body></html>""",
+                status_code=403,
+            )
+        index_path = os.path.join(DIST_PATH, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return HTMLResponse("<h1>前端未构建，请先运行 npm run build</h1>", status_code=503)
+
+    @app.get("/")
+    async def read_index():
+        index_path = os.path.join(DIST_PATH, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "前端未构建，请先运行 setup.sh"}
+
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_PATH, "assets")), name="assets")
+
+    @app.get("/{path:path}")
+    async def serve_spa(path: str):
+        # 未命中的 API 路径不应返回 HTML，否则前端 fetch 会解析失败
+        if path.startswith("api/") or path.startswith("ws/"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        index_path = os.path.join(DIST_PATH, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "页面不存在"}
+
+else:
+
+    @app.get("/")
+    async def no_frontend():
+        return {
+            "message": "欢迎使用猜数字桌游 API",
+            "status": "后端运行正常",
+            "notice": "前端尚未构建，请运行 ./setup.sh 完成环境配置",
+        }
+
+
 @app.websocket("/ws/{room_id}/{player_name}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: str):
+    # 保留号：管理入口房间号、presence 与管理通道都不允许被当成游戏房
+    if room_id in (app_config.admin_room(), "presence", "admin"):
+        await websocket.accept()
+        await websocket.send_json({"error": "该房间号已保留"})
+        await websocket.close(code=1008, reason="room_reserved")
+        return
+
     await websocket.accept()
+
+    ip = app_config.normalize_ip(websocket.client.host if websocket.client else "")
+    user_agent = websocket.headers.get("user-agent", "")
+    client_id = websocket.query_params.get("clientId") or ""
+
+    # 第一道闸：IP 黑名单（单 IP 或 CIDR 网段）
+    if app_config.is_ip_banned(ip):
+        banned = app_config.record_ip_hit(ip) or ip
+        term_registry.log_event(f"拒绝黑名单连入（{ip}，命中 {banned}）", "warn")
+        await websocket.send_json({"error": "你的 IP 已被禁止连入"})
+        await websocket.close(code=1008, reason="ip_banned")
+        return
 
     player_id = f"{room_id}_{player_name}"
     room = rooms.get(room_id)
-    if not room:
+    is_new_room = room is None
+    if room is None:
         room = GameRoom(room_id, player_id)
         rooms[room_id] = room
 
@@ -869,12 +1142,29 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
     else:
         if len(room.players) >= 4:
             await websocket.send_json({"error": "房间已满"})
-            await websocket.close()
+            await websocket.close(code=1008, reason="room_full")
+            return
+        # 第二道闸：昵称违禁词（文字聊天的同一套词库，聊天功能落地后复用）
+        hit_word = app_config.check_banned_text(player_name)
+        if hit_word:
+            app_config.record_word_hit(hit_word)
+            term_registry.log_event(f"拒绝含违禁词的昵称（{ip}，命中「{hit_word}」）", "warn")
+            await websocket.send_json({"error": f"昵称包含违禁内容：{hit_word}"})
+            await websocket.close(code=1008, reason="banned_nickname")
             return
         player = Player(player_id, player_name)
         room.add_player(player, websocket)
 
     room.ws_connections[player_id] = websocket
+
+    if client_id:
+        term_registry.get_or_create(client_id, ip, user_agent, "player")
+        term_registry.attach_socket(client_id, websocket, "room")
+        term_registry.bind_player(client_id, player_name, room_id)
+
+    level = "info"
+    if is_new_room:
+        term_registry.log_event(f"创建房间 {room_id}（房主 {player_name}，{ip}）", level)
 
     await websocket.send_json({"event": "Event_SyncFullState", "payload": room.get_state()})
     await room.broadcast_state()
@@ -882,12 +1172,17 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
     try:
         while True:
             data = await websocket.receive_json()
+            if client_id:
+                term_registry.touch(client_id)
             await handle_command(room, player_id, data)
     except WebSocketDisconnect:
         print(f"玩家 {player_name} 断开连接")
         if player_id in room.players:
             room.players[player_id].isOnline = False
         room.ws_connections.pop(player_id, None)
+        if client_id:
+            term_registry.detach_socket(client_id, websocket)
+            term_registry.clear_room_binding(client_id, room_id)
 
         is_current = room.currentTurnPlayerId == player_id
         paused = False

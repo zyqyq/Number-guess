@@ -18,6 +18,11 @@ class WebSocketService {
   private onGameOver?: (data: any) => void;
   private onRoomClosed?: () => void;
   private onError?: (error: string) => void;
+  // 被管理员强制断开（close code 4001）
+  private onKicked?: (reason: string) => void;
+  // 致命错误（房间号被保留、服务端拒绝）：提示后不再重连
+  private onFatal?: (message: string) => void;
+  private fatal = false;
 
   constructor() {
     // 默认开发环境地址，生产环境可配置
@@ -31,6 +36,7 @@ class WebSocketService {
 
     this.roomId = roomId;
     if (token) this.accessToken = token;
+    this.fatal = false;
 
     this.status = 'connecting';
     const fullUrl = `${this.url}/${roomId}${token ? `?token=${token}` : ''}`;
@@ -60,7 +66,20 @@ class WebSocketService {
       this.status = 'closed';
       console.log('[WS] Closed', event.code, event.reason);
       this.ws = null;
-      
+
+      // 4001 = 管理员强制断开：提示后回首页，不自动重连
+      if (event.code === 4001) {
+        this.onKicked?.(event.reason || 'admin_kick');
+        return;
+      }
+
+      // 房间号被保留 / 服务端策略拒绝（1008）：提示后不再重连
+      if (this.fatal) return;
+      if (event.code === 1008) {
+        this.failFatal(event.reason === 'room_reserved' ? '该房间号已保留' : '连接被服务器拒绝');
+        return;
+      }
+
       // 如果不是正常关闭，尝试重连
       if (event.code !== 1000 && this.roomId) {
         this.attemptReconnect();
@@ -77,6 +96,7 @@ class WebSocketService {
   connectWithUrl(url: string) {
     if (this.status === 'open' || this.status === 'connecting') return;
 
+    this.fatal = false;
     this.status = 'connecting';
     
     console.log('[WS] Connecting to:', url);
@@ -104,7 +124,20 @@ class WebSocketService {
       this.status = 'closed';
       console.log('[WS] Closed', event.code, event.reason);
       this.ws = null;
-      
+
+      // 4001 = 管理员强制断开：提示后回首页，不自动重连
+      if (event.code === 4001) {
+        this.onKicked?.(event.reason || 'admin_kick');
+        return;
+      }
+
+      // 房间号被保留 / 服务端策略拒绝（1008）：提示后不再重连
+      if (this.fatal) return;
+      if (event.code === 1008) {
+        this.failFatal(event.reason === 'room_reserved' ? '该房间号已保留' : '连接被服务器拒绝');
+        return;
+      }
+
       // 如果不是正常关闭，尝试重连
       if (event.code !== 1000) {
         this.attemptReconnect();
@@ -120,7 +153,13 @@ class WebSocketService {
 
   private handleMessage(data: { event?: string; payload?: any; players?: any; gamePhase?: string; hostId?: string }) {
     const store = useGameStore();
-    
+
+    // 服务端拒绝（如保留房间号）：标记为致命错误，不再重连
+    if ((data as any).error) {
+      this.failFatal(String((data as any).error));
+      return;
+    }
+
     // 处理 Lobby 页面的简单状态更新（没有 event 字段）
     if (!data.event && data.players) {
       store.updateGameState(data as any);
@@ -146,9 +185,17 @@ class WebSocketService {
       case 'Event_RoomClosed':
         this.onRoomClosed?.();
         break;
+      case 'Event_AdminNotice':
+        // 管理员操作的提示（如房间被关闭），不需要额外 UI 即可忽略
+        break;
       default:
         console.warn('[WS] Unknown event:', data.event);
     }
+  }
+
+  private failFatal(message: string) {
+    this.fatal = true;
+    this.onFatal?.(message);
   }
 
   private attemptReconnect() {
@@ -183,6 +230,7 @@ class WebSocketService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.fatal = false;
     if (this.ws) {
       this.ws.close(1000, 'User disconnected');
       this.ws = null;
@@ -199,6 +247,8 @@ class WebSocketService {
   setGameOverCallback(cb: (data: any) => void) { this.onGameOver = cb; }
   setRoomClosedCallback(cb: () => void) { this.onRoomClosed = cb; }
   setErrorCallback(cb: (error: string) => void) { this.onError = cb; }
+  setKickedCallback(cb: (reason: string) => void) { this.onKicked = cb; }
+  setFatalCallback(cb: (message: string) => void) { this.onFatal = cb; }
 }
 
 export const wsService = new WebSocketService();
