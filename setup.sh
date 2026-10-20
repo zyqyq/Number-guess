@@ -92,6 +92,23 @@ echo ""
 echo "🏗️  正在构建前端静态资源..."
 npm run build
 
+# -------------------------
+# 6. 生成 HTTPS 自签证书（语音通话需要安全上下文）
+# -------------------------
+echo ""
+echo "🔍 [6/6] 检查 HTTPS 自签证书..."
+
+if [ ! -f "certs/server.crt" ] || [ ! -f "certs/server.key" ]; then
+    echo "🔐 正在生成自签证书（scripts/gen-cert.sh）..."
+    if [ -x "scripts/gen-cert.sh" ]; then
+        ./scripts/gen-cert.sh < /dev/null
+    else
+        chmod +x scripts/gen-cert.sh && ./scripts/gen-cert.sh < /dev/null
+    fi
+else
+    echo "⚠️  证书已存在，跳过生成（本机 IP 变化后可重新执行 ./scripts/gen-cert.sh）"
+fi
+
 echo ""
 echo "=========================================="
 echo "✅ 环境配置完成！"
@@ -99,9 +116,10 @@ echo "=========================================="
 echo ""
 echo "📋 下一步操作："
 echo "   1. 运行启动脚本：./start.sh"
-echo "   2. 访问游戏：http://localhost:8000"
+echo "   2. 访问游戏：https://localhost:8000（首次需信任自签证书）"
 echo ""
 echo "💡 提示："
 echo "   - 前端构建产物位于：./dist/"
 echo "   - 后端入口文件：./backend/main.py"
+echo "   - HTTPS 证书位于：./certs/（已加入 .gitignore，不会提交）"
 echo ""

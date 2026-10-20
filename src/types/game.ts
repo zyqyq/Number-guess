@@ -75,6 +75,43 @@ export interface GameState {
   gameOverInfo: GameOverInfo | null;
   seed?: string;
   usedCardNumbers?: Array<{ color: Color; number: number }>;
+  /** 聊天室：最近 50 条消息（含系统消息） */
+  chat?: ChatMessage[];
+  /** 语音通话成员表 */
+  voice?: VoiceState;
+}
+
+/** 一条聊天消息；system 为 true 时是加入/离开/语音动态等系统提示 */
+export interface ChatMessage {
+  id: string;
+  from: string;
+  fromName: string;
+  text: string;
+  ts: number;
+  system?: boolean;
+}
+
+/** 语音通话状态（随游戏快照下发） */
+export interface VoiceState {
+  participants: string[];
+  hostMuted: string[];
+}
+
+/** WebRTC 信令数据：SDP 描述或 ICE 候选 */
+export interface VoiceSignalData {
+  description?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+}
+
+/** 语音成员在 UI 上的展示态 */
+export interface VoiceMember {
+  playerId: string;
+  playerName: string;
+  isBot: boolean;
+  hostMuted: boolean;
+  selfMuted: boolean;
+  speaking: boolean;
+  connected: boolean;
 }
 
 export interface FullStateSnapshot extends GameState {
@@ -97,7 +134,17 @@ export type ClientCommand =
   | { cmd: 'DissolveRoom' }
   | { cmd: 'KickPlayer'; playerId: string }
   | { cmd: 'AddBot' }
-  | { cmd: 'RemoveBot'; playerId: string };
+  | { cmd: 'RemoveBot'; playerId: string }
+  // 聊天室
+  | { cmd: 'SendChat'; text: string }
+  // 语音通话
+  | { cmd: 'VoiceJoin' }
+  | { cmd: 'VoiceLeave' }
+  | { cmd: 'VoiceSignal'; to: string; data: VoiceSignalData }
+  | { cmd: 'VoiceSetMute'; muted: boolean }
+  | { cmd: 'VoiceMuteAll'; muted: boolean }
+  | { cmd: 'VoiceKick'; playerId: string }
+  | { cmd: 'VoiceClose' };
 
 // WebSocket 服务端事件
 export type ServerEvent =
@@ -105,4 +152,16 @@ export type ServerEvent =
   | { event: 'Event_SyncFullState'; payload: FullStateSnapshot }
   | { event: 'Event_GuessResult'; payload: { correct: boolean; correctNumbers?: number[] } }
   | { event: 'Event_PlayerDisconnected'; payload: { playerId: string; isCurrentTurnPlayer: boolean; paused: boolean } }
-  | { event: 'Event_GameOver'; payload: GameOverInfo };
+  | { event: 'Event_GameOver'; payload: GameOverInfo }
+  // 聊天室
+  | { event: 'Event_Chat'; payload: ChatMessage }
+  | { event: 'Event_ChatRejected'; payload: { reason: string; word?: string } }
+  // 语音通话
+  | { event: 'Event_VoicePeers'; payload: { peers: string[] } }
+  | { event: 'Event_VoicePeerJoined'; payload: { playerId: string; playerName: string } }
+  | { event: 'Event_VoicePeerLeft'; payload: { playerId: string; playerName: string } }
+  | { event: 'Event_VoiceSignal'; payload: { from: string; data: VoiceSignalData } }
+  | { event: 'Event_VoiceMuteState'; payload: { playerId: string; muted: boolean } }
+  | { event: 'Event_VoiceHostMuted'; payload: { muted: boolean } }
+  | { event: 'Event_VoiceKicked'; payload: { by: string } }
+  | { event: 'Event_VoiceClosed'; payload: { by: string } };

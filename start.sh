@@ -65,6 +65,18 @@ else
 fi
 
 # -------------------------
+# 检查 HTTPS 证书（语音通话需要安全上下文）
+# -------------------------
+TLS_ARGS=""
+if [ -f "certs/server.crt" ] && [ -f "certs/server.key" ]; then
+    TLS_ARGS="--ssl-certfile certs/server.crt --ssl-keyfile certs/server.key"
+    FE_SCHEME="https"
+else
+    FE_SCHEME="http"
+    echo "⚠️  未检测到证书，语音通话将不可用；可执行 ./scripts/gen-cert.sh 生成"
+fi
+
+# -------------------------
 # 启动服务
 # -------------------------
 echo ""
@@ -72,18 +84,18 @@ echo "=========================================="
 echo "🎮  正在启动游戏服务..."
 echo "=========================================="
 echo ""
-echo "📍 前端地址：http://localhost:5173"
-echo "📍 后端地址：http://localhost:8000"
-echo "📍 API 健康检查：http://localhost:8000/api/health"
+echo "📍 前端地址：${FE_SCHEME}://localhost:5173"
+echo "📍 后端地址：${FE_SCHEME}://localhost:8000"
+echo "📍 API 健康检查：${FE_SCHEME}://localhost:8000/api/health"
 echo ""
 echo "💡 提示："
 echo "   - 按 Ctrl+C 停止所有服务"
-echo "   - 服务日志将显示在此终端"
+echo "   - 首次访问 HTTPS 需在浏览器里手动信任自签证书"
 echo ""
 
 # 启动后端（后台运行）
 echo "🔧 启动后端服务器..."
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload $TLS_ARGS &
 BACKEND_PID=$!
 echo "✅ 后端已启动 (PID: $BACKEND_PID)"
 

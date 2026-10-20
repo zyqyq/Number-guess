@@ -1,6 +1,7 @@
 <template>
   <div class="lobby-page">
-    <div class="lobby-container">
+    <div class="lobby-wrap">
+      <div class="lobby-container">
       <!-- 房间号展示 -->
       <div class="room-header">
         <h1>房间号：<span class="room-id">{{ roomId }}</span></h1>
@@ -72,6 +73,18 @@
       <div v-if="feedbackMsg" class="feedback" :class="feedbackType">
         {{ feedbackMsg }}
       </div>
+      </div>
+
+      <!-- 右侧：聊天室（等待阶段也能文字聊天 / 语音） -->
+      <aside class="lobby-chat">
+        <ChatPanel
+          :roomId="roomId"
+          :playerId="currentPlayerId"
+          :playerName="playerName"
+          :isHost="isHost"
+          :players="chatPlayers"
+        />
+      </aside>
     </div>
   </div>
 </template>
@@ -82,6 +95,7 @@ import { useRouter, useRoute } from 'vue-router';
 import { wsService } from '@/services/websocket';
 import { getClientId } from '@/services/presence';
 import { useGameStore } from '@/stores/game';
+import ChatPanel from '@/components/ChatPanel.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -95,6 +109,15 @@ const feedbackMsg = ref('');
 const feedbackType = ref<'success' | 'error'>('success');
 const currentPlayerId = computed(() => `${roomId.value}_${playerName.value}`);
 
+// 聊天室的在线人数与成员展示用
+const chatPlayers = computed(() => {
+  const map: Record<string, { playerId: string; playerName: string; isBot?: boolean }> = {};
+  for (const p of players.value) {
+    map[p.playerId] = { playerId: p.playerId, playerName: p.playerName, isBot: p.isBot };
+  }
+  return map;
+});
+
 const updatePlayerList = (state: any) => {
   if (state.players) {
     players.value = Object.values(state.players as any).map((p: any) => ({
@@ -103,6 +126,11 @@ const updatePlayerList = (state: any) => {
       isHost: p.playerId === (state as any).hostId,
       isBot: !!p.isBot
     }));
+
+    // 房主身份以服务端为准：手动填房号加入的第一人同样会成为房主
+    if ((state as any).hostId) {
+      isHost.value = (state as any).hostId === currentPlayerId.value;
+    }
     
     if (players.value.length === 4) {
       showFeedback('房间已满，可以开始游戏了！', 'success');
@@ -234,15 +262,63 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   padding: 40px 20px;
   overflow-y: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+/* 大厅主体 + 右侧聊天室 */
+.lobby-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  width: 100%;
+  max-width: 1000px;
+  min-height: min(720px, calc(100vh - 80px));
 }
 
 .lobby-container {
-  max-width: 600px;
-  margin: 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   background: white;
   border-radius: 16px;
   padding: 32px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+/* 右侧聊天栏：固定宽度、内部滚动 */
+.lobby-chat {
+  flex: 0 0 300px;
+  width: 300px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lobby-chat :deep(.chat-panel) {
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+@media (max-width: 860px) {
+  .lobby-page {
+    align-items: flex-start;
+  }
+
+  .lobby-wrap {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .lobby-chat {
+    flex: 0 0 auto;
+    width: 100%;
+    height: 420px;
+  }
 }
 
 .room-header {

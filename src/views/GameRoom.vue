@@ -267,12 +267,15 @@
         </section>
       </div>
 
-      <!-- 右侧空白区：预留给聊天室 -->
+      <!-- 右侧空白区：聊天室（文字 + 语音通话） -->
       <aside class="side-rail rail-right">
-        <section class="rail-card chat-card">
-          <h3 class="rail-title">💬 聊天室</h3>
-          <p class="rail-empty">文字聊天与语音通话<br />功能开发中，此处预留</p>
-        </section>
+        <ChatPanel
+          :roomId="roomId"
+          :playerId="playerId"
+          :playerName="playerName"
+          :isHost="isHost"
+          :players="gameState?.players || {}"
+        />
       </aside>
     </main>
 
@@ -352,6 +355,7 @@ import { getClientId } from '@/services/presence';
 import PublicCards from '@/components/PublicCards.vue';
 import PlayerHand from '@/components/PlayerHand.vue';
 import CandidateTable from '@/components/CandidateTable.vue';
+import ChatPanel from '@/components/ChatPanel.vue';
 import type { Color, Card, ClientCommand } from '@/types/game';
 import { getColorClass, getColorValue, getPointFromNumber, getColorFromNumber } from '@/utils/game';
 import { useDeduction } from '@/composables/gameLogic';
@@ -363,7 +367,8 @@ const router = useRouter();
 const roomId = computed(() => String(route.query.roomId || gameStore.gameState?.roomId || 'ROOM001'));
 const playerName = computed(() => String(route.query.playerName || 'Player'));
 const playerId = computed(() => `${roomId.value}_${playerName.value}`);
-const isHost = computed(() => route.query.isHost === 'true');
+// 房主身份以服务端 hostId 为准（手动填房号加入的第一人也是房主）
+const isHost = computed(() => !!gameState.value?.hostId && gameState.value.hostId === playerId.value);
 
 // 选中的公共牌
 const selectedPublicCard = ref<Card | null>(null);
@@ -851,9 +856,6 @@ onUnmounted(() => {
 .chat-card {
   flex: 1 1 auto;
   min-height: 0;
-  border: 1px dashed #d5dde7;
-  background: rgba(255, 255, 255, 0.62);
-  box-shadow: none;
 }
 
 /* 中间游戏区：沿用原有 3:1 分栏 */

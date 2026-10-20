@@ -130,6 +130,14 @@ class GameRoom:
         # 机器人：不持有 WebSocket，由一个常驻驱动任务轮询当前回合并代为行动
         self.botTask: Optional[asyncio.Task] = None
         self.botSeq = 0
+        # 文字聊天：房间级、跨牌局保留；chatHistory 最多保留 100 条，快照只带 50 条
+        self.chatHistory: List[dict] = []
+        self.chatSeq = 0
+        self.chatLastAt: Dict[str, float] = {}
+        # 语音通话：WebRTC mesh。服务端只维护成员表与禁麦标记，媒体流点对点直连，
+        # 信令（offer/answer/ICE）通过房间 WebSocket 转发
+        self.voiceParticipants: List[str] = []
+        self.voiceHostMuted: set[str] = set()
 
     def add_bot(self) -> Optional[Player]:
         """在等待阶段由房主添加一个机器人，房间人数上限仍为 4。"""
@@ -267,6 +275,13 @@ class GameRoom:
             "gameOverInfo": self.gameOverInfo,
             "seed": self.seed,
             "usedCardNumbers": self.usedCardNumbers,
+            # 聊天室：最近 50 条历史（含系统消息），供晚加入者补上下文
+            "chat": list(self.chatHistory[-CHAT_SNAPSHOT:]),
+            # 语音通话成员表（机器人不参与）
+            "voice": {
+                "participants": list(self.voiceParticipants),
+                "hostMuted": list(self.voiceHostMuted),
+            },
         }
 
     async def broadcast_state(self):
@@ -285,6 +300,24 @@ class GameRoom:
             await ws.send_json({"event": event, "payload": payload})
         except Exception as exc:
             print(f"发送 {event} 给 {player_id} 失败：{exc}")
+
+    # ------------------------------------------------------------ 文字聊天
+
+    def push_chat(self, message: dict):
+        """写入聊天历史（环形保留，防止长时间挂机后无限增长）。"""
+        self.chatHistory.append(message)
+        if len(self.chatHistory) > CHAT_HISTORY_KEEP:
+            del self.chatHistory[: len(self.chatHistory) - CHAT_HISTORY_KEEP]
+
+    async def broadcast_chat(self, message: dict):
+        """房间内广播一条聊天消息（含发送者本人，前端不做本地回显）。"""
+        self.push_chat(message)
+        for pid in list(self.ws_connections.keys()):
+            await self.send_to_player(pid, "Event_Chat", message)
+
+    def next_chat_id(self) -> str:
+        self.chatSeq += 1
+        return f"{self.roomId}-c{self.chatSeq}"
 
 
 rooms: Dict[str, GameRoom] = {}
@@ -714,8 +747,19 @@ async def cmd_kick_player(room: GameRoom, kicker_id: str, kicked_id: Optional[st
         was_current = room.currentTurnPlayerId == kicked_id
         if kicked.isBot:
             room.stop_bot_driver()
+        if kicked_id in room.voiceParticipants:
+            # 先退出语音（此时玩家还在房间里，系统消息能显示昵称）
+            await cmd_voice_leave(room, kicked_id)
+        # 先取出连接再移除玩家：remove_player 会清掉 ws_connections，
+        # 之后再取就取不到，被踢者的 socket 将永远关不掉
+        kicked_ws = room.ws_connections.pop(kicked_id, None)
         room.remove_player(kicked_id)
         room.turnOrder = [pid for pid in room.turnOrder if pid != kicked_id]
+        if kicked_ws is not None:
+            try:
+                await kicked_ws.close(code=4001, reason="kicked")
+            except Exception:
+                pass
         if was_current and room.gamePhase == "PLAYING":
             room.currentTurnPlayerId = None
             await next_turn(room)
@@ -727,14 +771,19 @@ async def cmd_kick_player(room: GameRoom, kicker_id: str, kicked_id: Optional[st
 async def cmd_add_bot(room: GameRoom, player_id: str):
     if player_id != room.hostId or room.gamePhase != "WAITING":
         return
-    if room.add_bot():
+    bot = room.add_bot()
+    if bot:
+        await room.broadcast_chat(system_chat(room, f"{bot.playerName} 加入了房间"))
         await room.broadcast_state()
 
 
 async def cmd_remove_bot(room: GameRoom, player_id: str, bot_id: Optional[str]):
     if player_id != room.hostId or room.gamePhase != "WAITING" or not bot_id:
         return
+    bot = room.players.get(bot_id)
     if room.remove_bot(bot_id):
+        if bot is not None:
+            await room.broadcast_chat(system_chat(room, f"{bot.playerName} 离开了房间"))
         await room.broadcast_state()
 
 
@@ -745,6 +794,204 @@ async def cmd_reconnect(room: GameRoom, player_id: str, access_token: Optional[s
     if not access_token or player.accessToken == access_token:
         player.isOnline = True
         await room.broadcast_state()
+
+
+# ---------------------------------------------------------------- 文字聊天
+
+CHAT_MAX_LEN = 300          # 单条消息最大字符数
+CHAT_MIN_INTERVAL = 1.0     # 同一玩家两条消息的最小间隔（秒）
+CHAT_HISTORY_KEEP = 100     # 房间内保留的聊天历史上限
+CHAT_SNAPSHOT = 50          # 状态快照里携带的聊天条数
+
+
+def system_chat(room: GameRoom, text: str) -> dict:
+    """构造一条系统消息（加入/离开/语音动态等）。"""
+    return {
+        "id": room.next_chat_id(),
+        "from": "system",
+        "fromName": "系统",
+        "text": text,
+        "ts": time.time(),
+        "system": True,
+    }
+
+
+async def cmd_send_chat(room: GameRoom, player_id: str, text: Any):
+    player = room.players.get(player_id)
+    if player is None or player.isBot:
+        return
+    raw = str(text or "").strip()
+    if not raw:
+        return
+    if len(raw) > CHAT_MAX_LEN:
+        raw = raw[:CHAT_MAX_LEN]
+
+    now = time.time()
+
+    # 违禁词：与昵称校验共用同一套词库（归一化匹配，防拆字绕过）。
+    # 先判违禁再判限速：命中词库时给出明确原因，避免被「发送太频繁」掩盖。
+    hit_word = app_config.check_banned_text(raw)
+    if hit_word:
+        app_config.record_word_hit(hit_word)
+        term_registry.log_event(
+            f"拦截聊天违禁词（{player.playerName}，房间 {room.roomId}，命中「{hit_word}」）", "warn"
+        )
+        await room.send_to_player(
+            player_id,
+            "Event_ChatRejected",
+            {"reason": f"内容包含违禁词：{hit_word}", "word": hit_word},
+        )
+        return
+
+    if now - room.chatLastAt.get(player_id, 0.0) < CHAT_MIN_INTERVAL:
+        await room.send_to_player(
+            player_id, "Event_ChatRejected", {"reason": "发送太频繁，请稍后再试"}
+        )
+        return
+    room.chatLastAt[player_id] = now
+
+    await room.broadcast_chat(
+        {
+            "id": room.next_chat_id(),
+            "from": player_id,
+            "fromName": player.playerName,
+            "text": raw,
+            "ts": now,
+            "system": False,
+        }
+    )
+
+
+# ---------------------------------------------------------------- 语音通话
+
+
+async def cmd_voice_join(room: GameRoom, player_id: str):
+    """加入语音通话：新成员拿到既有成员列表并主动发 offer，老成员收到通知。"""
+    player = room.players.get(player_id)
+    if player is None or player.isBot:
+        return
+
+    if player_id in room.voiceParticipants:
+        # 页面刷新后重连：先静默移除再走完整流程，双方重建 PeerConnection
+        room.voiceParticipants.remove(player_id)
+        for pid in list(room.voiceParticipants):
+            await room.send_to_player(
+                pid,
+                "Event_VoicePeerLeft",
+                {"playerId": player_id, "playerName": player.playerName},
+            )
+
+    room.voiceParticipants.append(player_id)
+    room.voiceHostMuted.discard(player_id)
+    term_registry.log_event(f"{player.playerName} 加入语音通话（房间 {room.roomId}）", "info")
+
+    await room.send_to_player(
+        player_id,
+        "Event_VoicePeers",
+        {"peers": [pid for pid in room.voiceParticipants if pid != player_id]},
+    )
+    for pid in list(room.voiceParticipants):
+        if pid == player_id:
+            continue
+        await room.send_to_player(
+            pid,
+            "Event_VoicePeerJoined",
+            {"playerId": player_id, "playerName": player.playerName},
+        )
+    await room.broadcast_chat(system_chat(room, f"{player.playerName} 加入了语音通话"))
+    await room.broadcast_state()
+
+
+async def cmd_voice_leave(room: GameRoom, player_id: str, notify_chat: bool = True):
+    if player_id not in room.voiceParticipants:
+        return
+    room.voiceParticipants.remove(player_id)
+    room.voiceHostMuted.discard(player_id)
+    player = room.players.get(player_id)
+    name = player.playerName if player else player_id
+    for pid in list(room.voiceParticipants):
+        await room.send_to_player(
+            pid, "Event_VoicePeerLeft", {"playerId": player_id, "playerName": name}
+        )
+    if notify_chat and player is not None:
+        await room.broadcast_chat(system_chat(room, f"{name} 离开了语音通话"))
+    await room.broadcast_state()
+
+
+async def cmd_voice_signal(room: GameRoom, player_id: str, to: Any, data: Any):
+    """转发 WebRTC 信令（offer / answer / ICE candidate），点对点直达。"""
+    if player_id not in room.voiceParticipants:
+        return
+    target = str(to or "")
+    if not target or target == player_id or target not in room.voiceParticipants:
+        return
+    if not isinstance(data, dict):
+        return
+    await room.send_to_player(target, "Event_VoiceSignal", {"from": player_id, "data": data})
+
+
+async def cmd_voice_set_mute(room: GameRoom, player_id: str, muted: bool):
+    """自己的静音开关：只广播状态供他人看到禁麦徽标，实际禁音在本地轨道完成。"""
+    if player_id not in room.voiceParticipants:
+        return
+    for pid in list(room.voiceParticipants):
+        if pid == player_id:
+            continue
+        await room.send_to_player(
+            pid, "Event_VoiceMuteState", {"playerId": player_id, "muted": bool(muted)}
+        )
+
+
+async def cmd_voice_mute_all(room: GameRoom, player_id: str, muted: bool):
+    """房主全体禁麦 / 解除禁麦：服务端记录标记并推送事件，客户端禁用麦克风轨道。"""
+    if player_id != room.hostId:
+        return
+    if muted:
+        room.voiceHostMuted.update(room.voiceParticipants)
+    else:
+        room.voiceHostMuted.clear()
+    for pid in list(room.voiceParticipants):
+        await room.send_to_player(pid, "Event_VoiceHostMuted", {"muted": bool(muted)})
+    action = "全体禁麦" if muted else "解除全体禁麦"
+    term_registry.log_event(f"房主{action}（房间 {room.roomId}）", "warn")
+    await room.broadcast_state()
+
+
+async def cmd_voice_kick(room: GameRoom, player_id: str, target_id: Any):
+    """房主把某名成员移出语音通话。"""
+    if player_id != room.hostId:
+        return
+    target = str(target_id or "")
+    if not target or target not in room.voiceParticipants:
+        return
+    room.voiceParticipants.remove(target)
+    room.voiceHostMuted.discard(target)
+    target_player = room.players.get(target)
+    name = target_player.playerName if target_player else target
+    host = room.players.get(player_id)
+    for pid in list(room.voiceParticipants):
+        await room.send_to_player(
+            pid, "Event_VoicePeerLeft", {"playerId": target, "playerName": name}
+        )
+    await room.send_to_player(
+        target, "Event_VoiceKicked", {"by": host.playerName if host else "房主"}
+    )
+    await room.broadcast_chat(system_chat(room, f"{name} 被移出语音通话"))
+    await room.broadcast_state()
+
+
+async def cmd_voice_close(room: GameRoom, player_id: str):
+    """房主关闭通话：全员退出并销毁本地 PeerConnection。"""
+    if player_id != room.hostId or not room.voiceParticipants:
+        return
+    host = room.players.get(player_id)
+    by = host.playerName if host else "房主"
+    room.voiceParticipants = []
+    room.voiceHostMuted.clear()
+    for pid in list(room.ws_connections.keys()):
+        await room.send_to_player(pid, "Event_VoiceClosed", {"by": by})
+    await room.broadcast_chat(system_chat(room, f"{by} 关闭了语音通话"))
+    await room.broadcast_state()
 
 
 async def handle_command(room: GameRoom, player_id: str, message: dict):
@@ -776,15 +1023,31 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await cmd_deselect_public_card(room, player_id)
     elif cmd == "ResetGame":
         if player_id == room.hostId:
-            reset_room_state(room)
+            await reset_room_state(room)
             term_registry.log_event(f"房主重置房间 {room.roomId}", "info")
             await room.broadcast_state()
     elif cmd == "DissolveRoom":
         if player_id == room.hostId:
             await admin_close_room(room, by="房主")
+    elif cmd == "SendChat":
+        await cmd_send_chat(room, player_id, message.get("text"))
+    elif cmd == "VoiceJoin":
+        await cmd_voice_join(room, player_id)
+    elif cmd == "VoiceLeave":
+        await cmd_voice_leave(room, player_id)
+    elif cmd == "VoiceSignal":
+        await cmd_voice_signal(room, player_id, message.get("to"), message.get("data"))
+    elif cmd == "VoiceSetMute":
+        await cmd_voice_set_mute(room, player_id, bool(message.get("muted")))
+    elif cmd == "VoiceMuteAll":
+        await cmd_voice_mute_all(room, player_id, bool(message.get("muted")))
+    elif cmd == "VoiceKick":
+        await cmd_voice_kick(room, player_id, message.get("playerId"))
+    elif cmd == "VoiceClose":
+        await cmd_voice_close(room, player_id)
 
 
-def reset_room_state(room: GameRoom):
+async def reset_room_state(room: GameRoom):
     """重置到等待界面，保持房间号与玩家（房主重置与管理员重置共用）。"""
     room.stop_bot_driver()
     room.gamePhase = "WAITING"
@@ -806,10 +1069,16 @@ def reset_room_state(room: GameRoom):
         p.hand = []
         p.clues = []
         p.isAlive = True
+    # 重置牌局会结束当前语音通话（聊天记录保留）
+    if room.voiceParticipants:
+        room.voiceParticipants = []
+        room.voiceHostMuted.clear()
+        for pid in list(room.ws_connections.keys()):
+            await room.send_to_player(pid, "Event_VoiceClosed", {"by": "牌局重置"})
 
 
 async def admin_reset_room(room: GameRoom):
-    reset_room_state(room)
+    await reset_room_state(room)
     term_registry.log_event(f"管理员重置房间 {room.roomId}", "warn")
     await room.broadcast_state()
 
@@ -829,19 +1098,12 @@ async def admin_close_room(room: GameRoom, by: str = "管理员"):
 
 
 async def admin_kick_player(room: GameRoom, player_id: Optional[str]):
-    """管理员把某名玩家移出房间：先按房主踢人逻辑处理，再断其连接。"""
+    """管理员把某名玩家移出房间（cmd_kick_player 内部会以 4001 断其连接）。"""
     if not player_id or player_id not in room.players:
         return
     player = room.players[player_id]
     await cmd_kick_player(room, room.hostId, player_id)
     term_registry.log_event(f"管理员移出玩家 {player.playerName}（房间 {room.roomId}）", "warn")
-    ws = room.ws_connections.get(player_id)
-    if ws is not None:
-        try:
-            await ws.close(code=4001, reason="admin_kick")
-        except Exception:
-            pass
-        room.ws_connections.pop(player_id, None)
 
 
 async def refresh_after_terminal_kick(room: GameRoom):
@@ -880,6 +1142,12 @@ async def startup_event():
     )
     print(
         f"⚙️  IP 黑名单 {len(app_config.ip_entries())} 条；违禁词 {len(app_config.word_entries())} 个"
+    )
+    tls = _tls_kwargs()
+    print(
+        "🔒 HTTPS：已启用（自签证书，支持语音通话）"
+        if tls
+        else "🔒 HTTPS：未启用（未找到 certs/server.crt，语音通话不可用）"
     )
 
 
@@ -1136,6 +1404,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
         room = GameRoom(room_id, player_id)
         rooms[room_id] = room
 
+    is_new_player = player_id not in room.players
     if player_id in room.players:
         player = room.players[player_id]
         player.isOnline = True
@@ -1169,6 +1438,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
     await websocket.send_json({"event": "Event_SyncFullState", "payload": room.get_state()})
     await room.broadcast_state()
 
+    if is_new_player:
+        await room.broadcast_chat(system_chat(room, f"{player_name} 加入了房间"))
+    else:
+        await room.broadcast_chat(system_chat(room, f"{player_name} 重新连接了房间"))
+
     try:
         while True:
             data = await websocket.receive_json()
@@ -1184,6 +1458,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
             term_registry.detach_socket(client_id, websocket)
             term_registry.clear_room_binding(client_id, room_id)
 
+        # 断开连接即退出语音通话，并通知房间内其他成员
+        if player_id in room.voiceParticipants:
+            await cmd_voice_leave(room, player_id)
+
         is_current = room.currentTurnPlayerId == player_id
         paused = False
         if is_current and room.gamePhase == "PLAYING":
@@ -1191,6 +1469,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
             paused = True
 
         await room.broadcast_state()
+        await room.broadcast_chat(system_chat(room, f"{player_name} 离开了房间"))
 
         for pid in list(room.ws_connections.keys()):
             await room.send_to_player(
@@ -1204,8 +1483,28 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
             )
 
 
+def _tls_kwargs() -> dict:
+    """检测到 scripts/gen-cert.sh 生成的自签证书时返回 uvicorn 的 SSL 参数。
+
+    语音通话需要 getUserMedia，浏览器只在安全上下文（HTTPS）下开放，
+    因此生产模式默认走 HTTPS；没有证书时回退纯 HTTP（失去语音能力）。
+    """
+    cert = os.path.join(PROJECT_ROOT, "certs", "server.crt")
+    key = os.path.join(PROJECT_ROOT, "certs", "server.key")
+    if os.path.exists(cert) and os.path.exists(key):
+        return {"ssl_certfile": cert, "ssl_keyfile": key}
+    return {}
+
+
 if __name__ == "__main__":
     import uvicorn
 
+    tls = _tls_kwargs()
+    scheme = "https" if tls else "http"
     print("🚀 正在启动服务器...")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    if tls:
+        print(f"🔒 已启用 HTTPS（自签证书）：{scheme}://localhost:8000")
+        print("💡 浏览器首次访问需手动信任证书；未生成证书可执行 ./scripts/gen-cert.sh")
+    else:
+        print("⚠️  未检测到证书，以 HTTP 启动（浏览器将禁用语音通话）")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", **tls)

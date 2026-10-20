@@ -1,4 +1,4 @@
-import type { GameState, ClientCommand } from '@/types/game';
+import type { GameState, ClientCommand, ChatMessage } from '@/types/game';
 import { useGameStore } from '@/stores/game';
 
 type WSStatus = 'connecting' | 'open' | 'closing' | 'closed';
@@ -22,6 +22,13 @@ class WebSocketService {
   private onKicked?: (reason: string) => void;
   // 致命错误（房间号被保留、服务端拒绝）：提示后不再重连
   private onFatal?: (message: string) => void;
+  // 连接（重连）成功：语音引擎用它重新登记成员身份
+  private onReopened?: () => void;
+  // 聊天室
+  private onChat?: (message: ChatMessage) => void;
+  private onChatRejected?: (payload: { reason: string; word?: string }) => void;
+  // 语音通话：所有 Event_Voice* 统一走这里，由语音引擎自行分发
+  private onVoiceEvent?: (event: string, payload: any) => void;
   private fatal = false;
 
   constructor() {
@@ -51,6 +58,7 @@ class WebSocketService {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+      this.onReopened?.();
     };
 
     this.ws.onmessage = (event) => {
@@ -109,6 +117,7 @@ class WebSocketService {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+      this.onReopened?.();
     };
 
     this.ws.onmessage = (event) => {
@@ -188,6 +197,24 @@ class WebSocketService {
       case 'Event_AdminNotice':
         // 管理员操作的提示（如房间被关闭），不需要额外 UI 即可忽略
         break;
+      // ---------------- 聊天室 ----------------
+      case 'Event_Chat':
+        this.onChat?.(data.payload);
+        break;
+      case 'Event_ChatRejected':
+        this.onChatRejected?.(data.payload);
+        break;
+      // ---------------- 语音通话 ----------------
+      case 'Event_VoicePeers':
+      case 'Event_VoicePeerJoined':
+      case 'Event_VoicePeerLeft':
+      case 'Event_VoiceSignal':
+      case 'Event_VoiceMuteState':
+      case 'Event_VoiceHostMuted':
+      case 'Event_VoiceKicked':
+      case 'Event_VoiceClosed':
+        this.onVoiceEvent?.(data.event, data.payload);
+        break;
       default:
         console.warn('[WS] Unknown event:', data.event);
     }
@@ -249,6 +276,10 @@ class WebSocketService {
   setErrorCallback(cb: (error: string) => void) { this.onError = cb; }
   setKickedCallback(cb: (reason: string) => void) { this.onKicked = cb; }
   setFatalCallback(cb: (message: string) => void) { this.onFatal = cb; }
+  setReopenedCallback(cb: () => void) { this.onReopened = cb; }
+  setChatCallback(cb: (message: ChatMessage) => void) { this.onChat = cb; }
+  setChatRejectedCallback(cb: (payload: { reason: string; word?: string }) => void) { this.onChatRejected = cb; }
+  setVoiceEventCallback(cb: (event: string, payload: any) => void) { this.onVoiceEvent = cb; }
 }
 
 export const wsService = new WebSocketService();
