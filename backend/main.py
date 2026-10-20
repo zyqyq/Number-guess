@@ -386,9 +386,41 @@ async def cmd_select_public_card(room: GameRoom, player_id: str, public_card_id:
     if not public_card:
         return
 
+    # 每回合只能选定一张公共牌：重复选择同一张直接忽略；切换时回滚上一张牌的弃置与使用记录
+    if room.selectedPublicCardId == public_card.id:
+        return
+    if room.selectedPublicCardId:
+        prev_card = find_card(room.publicCards, room.selectedPublicCardId)
+        room.removedPublicCardIds.discard(room.selectedPublicCardId)
+        if prev_card:
+            for i in range(len(room.usedCardNumbers) - 1, -1, -1):
+                used = room.usedCardNumbers[i]
+                if used.get("color") == prev_card.color and used.get("number") == prev_card.number:
+                    room.usedCardNumbers.pop(i)
+                    break
+
     room.selectedPublicCardId = public_card.id
     room.removedPublicCardIds.add(public_card.id)
     room.usedCardNumbers.append({"color": public_card.color, "number": public_card.number})
+    await room.broadcast_state()
+
+
+async def cmd_deselect_public_card(room: GameRoom, player_id: str):
+    # 取消当前回合已选定的公共牌，并回滚该牌本回合留下的弃置与使用记录
+    if room.gamePhase != "PLAYING" or room.subPhase != "ACTION_PHASE":
+        return
+    if room.currentTurnPlayerId != player_id or not room.selectedPublicCardId:
+        return
+
+    card = find_card(room.publicCards, room.selectedPublicCardId)
+    room.removedPublicCardIds.discard(room.selectedPublicCardId)
+    if card:
+        for i in range(len(room.usedCardNumbers) - 1, -1, -1):
+            used = room.usedCardNumbers[i]
+            if used.get("color") == card.color and used.get("number") == card.number:
+                room.usedCardNumbers.pop(i)
+                break
+    room.selectedPublicCardId = None
     await room.broadcast_state()
 
 
@@ -398,7 +430,11 @@ async def cmd_judge_by_position(room: GameRoom, player_id: str, public_card_id: 
     if room.currentTurnPlayerId != player_id or not public_card_id:
         return
 
-    public_card = find_card(room.publicCards, public_card_id)
+    # 必须先选定公共牌，且只能对选定的那一张做判定
+    if not room.selectedPublicCardId or public_card_id != room.selectedPublicCardId:
+        return
+
+    public_card = find_card(room.publicCards, room.selectedPublicCardId)
     if not public_card:
         return
 
@@ -443,7 +479,11 @@ async def cmd_judge_by_point(room: GameRoom, player_id: str, public_card_id: Opt
     if room.currentTurnPlayerId != player_id or not public_card_id or target_color not in Color.ALL:
         return
 
-    public_card = find_card(room.publicCards, public_card_id)
+    # 必须先选定公共牌，且只能对选定的那一张做判定
+    if not room.selectedPublicCardId or public_card_id != room.selectedPublicCardId:
+        return
+
+    public_card = find_card(room.publicCards, room.selectedPublicCardId)
     if not public_card:
         return
 
@@ -566,8 +606,7 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
     elif cmd == "SelectPublicCard":
         await cmd_select_public_card(room, player_id, message.get("publicCardId"))
     elif cmd == "DeselectPublicCard":
-        room.selectedPublicCardId = None
-        await room.broadcast_state()
+        await cmd_deselect_public_card(room, player_id)
     elif cmd == "ResetGame":
         if player_id == room.hostId:
             # 重置到等待界面，保持房间号和玩家
