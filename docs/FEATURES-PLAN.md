@@ -56,6 +56,23 @@ src/
 
 ## 3. 功能 A：房间聊天室（文本 + 语音）
 
+> 状态：**已实施**（2026-10-20）。按「本地自签证书」方案落地 HTTPS，文本聊天 + WebRTC Mesh 语音全部可用；实施结果与计划的偏差见 3.0。
+
+### 3.0 实施结果与偏差
+
+| 计划项 | 实际落地 |
+| --- | --- |
+| 协议命名 | `ChatSend` → `SendChat`；`Event_ChatMessage` → `Event_Chat`；`VoiceSignal.target` → `to`；`VoiceDisable` → `VoiceClose`；`Event_VoiceState` 改为并入 `get_state()` 的 `voice` 字段（participants + hostMuted） |
+| 历史推送 | 不单独发 `Event_ChatHistory`，改为状态快照携带最近 50 条（上限 100 条环形保留），前端按 `id` 合并去重 |
+| 长度 / 限速 | 单条 ≤ 300 字符、同一玩家 1 秒 1 条；超限返回 `Event_ChatRejected` 提示原因（计划为静默丢弃） |
+| 违禁词 | 聊天与昵称共用 `config.json` 的 `bannedWords` 词库，归一化匹配挡拆写；命中回 `Event_ChatRejected` 并记录命中词 |
+| 信令通道 | 复用房间 WebSocket（未新建 `/ws/voice`），`VoiceJoin` 时新成员拿 `Event_VoicePeers` 并主动发 offer |
+| 音量 / 设备 | 听音量用 `HTMLAudioElement.volume`（0–100%），未用 GainNode 的 0–200%；麦克风 / 输出设备切换、说话检测（AnalyserNode RMS）均已实现；输出设备依赖 `setSinkId()`，Safari 下降级为系统默认 |
+| 禁麦双保险 | 服务端记录 `voiceHostMuted` 并推 `Event_VoiceHostMuted`，客户端禁用本地轨道；未实现「把远端音量设 0」的第二道（客户端禁麦已由服务端状态驱动 UI） |
+| 安全上下文 | **采用方案 1**：`scripts/gen-cert.sh` 生成本地自签证书（SAN 覆盖 localhost / 127.0.0.1 / ::1 / 本机全部 IPv4 / 常见内网），uvicorn 以 `--ssl-certfile/--ssl-keyfile` 启用 HTTPS；Vite 开发模式检测到证书同样转 HTTPS 并代理 `/ws`、`/api`。纯 HTTP 访问时文字聊天可用，语音页签提示改用 HTTPS |
+| 面板形态 | 未做可折叠抽屉：游戏页右侧栏（原预留位）与等待大厅右侧各挂一个 `ChatPanel.vue`，「聊天 / 语音」双页签；语音引擎为跨页面单例（`services/voice.ts`），大厅 ↔ 游戏页跳转不中断通话 |
+| 额外修复 | 房主身份改由服务端快照 `hostId` 判定（手动填房号加入的第一人此前拿不到房主权限）；管理员踢人现在会真正关闭被踢者连接（此前 `remove_player` 先移除 socket 导致 4001 从未发出） |
+
 ### 3.1 文本聊天
 
 **协议**
@@ -143,6 +160,25 @@ src/
 
 ## 5. 功能 C：系统管理员后台
 
+> 状态：**已实施**（2026-10-20）。按用户要求追加「仅本机 localhost 可访问」的硬限制，其余按 5.1–5.6 落地；第二轮追加「IP 黑名单 / 违禁词库 / 口令与开关配置化」，见 5.7。
+
+### 5.0 实施结果与偏差
+
+| 计划项 | 实际落地 |
+| --- | --- |
+| 入口：`adminzyq` + `6666` | 已实现，首页「加入房间」拦截跳转 `/admin`；`generateRoomId()` 排除 6666；后端拒绝 6666 的普通玩家连接 |
+| 仅本机访问 | **新增**：`/admin` 页面、`/api/admin/access`、`/ws/admin` 三处均校验对端是否回环地址，非本机分别返回 403 页面 / 403 JSON / 握手拒绝 |
+| 管理端鉴权 | 首帧 `AdminAuth{user,room}` 校验，失败回 `Event_AdminDenied` 并 `close(1008)`；口令可用 `ADMIN_USERNAME`/`ADMIN_ROOM` 覆盖 |
+| 终端注册表 | 独立模块 `backend/registry.py`：`clientId`（localStorage 持久化）、IP、连入时间、昵称、房间号、类型、连接集合；断开后保留 30 秒再清理 |
+| 欢迎页 presence | 已实现 `/ws/presence/{clientId}`，仅登记不参与游戏；游戏连接携带同一 `clientId` 回填昵称与房间号 |
+| 子页 1 连入终端 | 表格 + 状态/类型筛选 + 关键字搜索 + 强制断开（`4001`）；管理端自身连接不可断开 |
+| 子页 2 房间管理 | 卡片视图，含状态、轮次、时长、存活/总人数、阶段、成员（房主/机器人/离线/当前回合）；动作：重置、关闭、移出玩家 |
+| 子页 3 系统管理 | 概览卡片 + 运行环境 + 磁盘/CPU/内存进度条 + 最近事件流；未引入 `psutil`，用标准库 `os.getloadavg`/`resource`/`shutil` |
+| 快照推送 | 每 2 秒 `Event_AdminSnapshot` 全量推送；动作执行后立即补推一次 |
+| 房间时间字段 | `GameRoom.createdAt`/`gameStartedAt`/`gameEndedAt`，在开局、判定结束、重置时维护 |
+
+**验证**：18 项后端 WebSocket 断言全通过（presence 登记、开局、管理员鉴权、口令错误被拒、局域网管理端握手失败、6666 保留、强制断开 `4001`、重置、关闭房间、快照移除房间）；前端 playwright 实测三子页渲染、断开玩家后对方弹窗回首页、局域网访问 `/admin` 得 403、0 控制台报错。
+
 ### 5.1 入口与房间号保留
 
 - 欢迎页提交时判断：昵称 `adminzyq` 且房间号 `6666` → `router.push('/admin')`，不建立游戏连接。
@@ -203,6 +239,22 @@ Event_AdminSnapshot {
 
 管理端 WS 每 2 秒推送一次全量快照（数据量小，实现简单）；动作命令在同一连接上发送，服务端执行后立即回推一次。
 
+### 5.7 第二轮：IP 黑名单 / 违禁词 / 配置化
+
+> 状态：**已实施**（2026-10-20）。原计划中「管理口令是否用环境变量」的待确认项，最终落地为 `config.json` + 环境变量覆盖 + 管理后台「重载配置」热生效。
+
+| 需求 | 落地 |
+| --- | --- |
+| IP 黑名单禁止连入 | `backend/config.py` 的 `security.ipBlacklist`，支持单 IP 与 CIDR；`/ws/{room}`、`/ws/presence`、`/ws/admin`、`/api/admin/*`、`/admin` 五处统一拦截，关闭码 `1008 / ip_banned`，命中计数持久化 |
+| 违禁词禁止出现在昵称与文字聊天 | `security.bannedWords`；昵称在 WS 握手时校验（`1008 / banned_nickname`），归一化匹配（忽略大小写/空白/零宽字符）；首页按 `/api/banned-words` 本地预检；聊天功能尚未落地，词库与 `check_banned_text()` 已就位可直接复用 |
+| 口令由配置文件决定 | `config.json` 的 `admin.username` / `admin.room`，替代原先硬编码；环境变量 `ADMIN_USERNAME` / `ADMIN_ROOM` 优先级更高 |
+| 配置文件中引入「是否禁止仅本机登录」开关 | `admin.localOnly`（默认 `true`）；为 `false` 时管理后台对任何来源开放，仅剩口令防护。环境变量 `ADMIN_LOCAL_ONLY` 可覆盖 |
+| 管理员在线维护 | 「安全设置」子页（第 4 个 tab）：口令与开关只读展示 + 重载配置按钮；黑名单与违禁词可增删，写回 `config.json` 并热推送快照 |
+
+**验证**：30 项后端 WebSocket / HTTP 断言全通过（违禁词增删与昵称拒绝、空白拆写变体命中、黑名单对 presence/游戏/管理三通道的拦截与恢复、`localOnly` 开关切换后局域网来源的放行与拒绝、新口令生效与旧口令拒绝、新保留房间号拒绝、本机自封后 403）；前端 playwright 实测安全设置页渲染、昵称预检提示、增删后列表更新、0 控制台报错。
+
+**与计划的偏差**：① 口令从「环境变量」改为「配置文件 + 环境变量覆盖」，并增加管理端 `AdminReloadConfig` 支持热生效；② 违禁词匹配比原计划（精确子串）多了归一化一层，用于挡空白拆字；③ 管理来源校验收敛为 `origin_allowed()` 一个总闸（黑名单优先于 `localOnly`），避免多处判断漂移。
+
 ## 6. 功能 D：机器人玩家
 
 > 状态：**已实施**（2026-10-20）。人数上限按「维持 4 人房」执行。
@@ -241,7 +293,7 @@ Event_AdminSnapshot {
 | --- | --- | --- | --- |
 | P1 | 文本聊天 + 轮次视觉指引 | 无 | 0.5–1 天 |
 | P2 | 机器人玩家（已完成） | P1 的回合调度改造 | 1–1.5 天 |
-| P3 | 管理后台（注册表 + 三子页） | 终端注册表、房间时间字段 | 2–3 天 |
+| P3 | 管理后台（注册表 + 三子页，已完成，含仅本机限制） | 终端注册表、房间时间字段 | — |
 | P4 | 语音通话 + HTTPS 部署 | 证书方案确认 | 2–4 天 |
 
 建议 P1 先上，能立刻改善对局体验；P4 单独排期，因为涉及部署方式变更（HTTP → HTTPS），需要提前通知常连的几台设备换地址。
@@ -250,7 +302,7 @@ Event_AdminSnapshot {
 
 1. **语音需要 HTTPS**：局域网 `http://` 下 `getUserMedia` 不可用。是否接受自签证书（首次访问需手动信任一次）？
 2. ~~**机器人上限**：维持 4 人房上限，还是需要支持更多人数？~~ 已定：维持 4 人房上限。
-3. **管理端鉴权**：「昵称 + 房间号」即可进入，安全性有限；是否追加独立口令（环境变量）？
+3. ~~**管理端鉴权**：「昵称 + 房间号」即可进入，安全性有限；是否追加独立口令（环境变量）？~~ 已定：口令与「仅本机」开关统一由 `config.json` 决定（环境变量可覆盖），并增加 IP 黑名单与违禁词库，口令退化为本机误入防护。详见 5.7。
 4. **聊天记录**：仅在内存保留最近 100 条（重启清空），是否符合预期？
 5. **iOS/Safari**：`setSinkId` 支持不完整，扬声器切换在 iPhone 上可能只能走系统设置；`getUserMedia` 在 iOS 也要求 HTTPS。
 6. **单文件后端**：新增四个模块会改变现有文件结构，若有外部脚本依赖 `backend/main.py` 内部符号，需要同步调整（目前只有 `start.sh` 与 README 引用入口 `backend.main:app`，不受影响）。
