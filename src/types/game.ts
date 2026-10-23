@@ -60,6 +60,18 @@ export interface GameOverInfo {
   reason: 'correct_guess' | 'deck_exhausted';
 }
 
+/** 旁观者（随 state 下发；管理员隐身旁观不在其中） */
+export interface SpectatorInfo {
+  playerId: string;
+  playerName: string;
+  /** 被房主禁言 */
+  muted: boolean;
+  /** 审批时未授予语音，或管理员隐身旁观 */
+  voiceBanned?: boolean;
+  /** 当前代入的参赛者 id */
+  viewId: string | null;
+}
+
 export interface GameState {
   roomId: string;
   hostId?: string;
@@ -79,6 +91,10 @@ export interface GameState {
   chat?: ChatMessage[];
   /** 语音通话成员表 */
   voice?: VoiceState;
+  /** 房主是否把房间设为隐身（隐身房间不出现在首页公开列表） */
+  isPrivate?: boolean;
+  /** 房间内旁观者列表 */
+  spectators?: SpectatorInfo[];
 }
 
 /** 一条聊天消息；system 为 true 时是加入/离开/语音动态等系统提示 */
@@ -89,6 +105,8 @@ export interface ChatMessage {
   text: string;
   ts: number;
   system?: boolean;
+  /** 旁观者发言（前端显示「旁观」徽标） */
+  spectator?: boolean;
 }
 
 /** 语音通话状态（随游戏快照下发） */
@@ -132,6 +150,10 @@ export type ClientCommand =
   | { cmd: 'SubmitGuess'; guesses: number[] }
   | { cmd: 'ResetGame' }
   | { cmd: 'DissolveRoom' }
+  // 主动退出房间（与断线不同：断线保留占位等重连，退出立即从名单移除）
+  | { cmd: 'LeaveRoom' }
+  // 房主把房间设为隐身 / 公开（只影响首页公开房间列表）
+  | { cmd: 'SetRoomPrivacy'; private: boolean }
   | { cmd: 'KickPlayer'; playerId: string }
   | { cmd: 'AddBot' }
   | { cmd: 'RemoveBot'; playerId: string }
@@ -144,7 +166,14 @@ export type ClientCommand =
   | { cmd: 'VoiceSetMute'; muted: boolean }
   | { cmd: 'VoiceMuteAll'; muted: boolean }
   | { cmd: 'VoiceKick'; playerId: string }
-  | { cmd: 'VoiceClose' };
+  | { cmd: 'VoiceClose' }
+  // 旁观者
+  | { cmd: 'SpectateSetView'; targetPlayerId: string }
+  | { cmd: 'SpectatorLeave' }
+  // 房主对旁观者的管控
+  | { cmd: 'SpectatorRespond'; playerId: string; allow: boolean; allowChat?: boolean; allowVoice?: boolean }
+  | { cmd: 'KickSpectator'; playerId: string }
+  | { cmd: 'MuteSpectator'; playerId: string; muted: boolean };
 
 // WebSocket 服务端事件
 export type ServerEvent =
@@ -164,4 +193,13 @@ export type ServerEvent =
   | { event: 'Event_VoiceMuteState'; payload: { playerId: string; muted: boolean } }
   | { event: 'Event_VoiceHostMuted'; payload: { muted: boolean } }
   | { event: 'Event_VoiceKicked'; payload: { by: string } }
-  | { event: 'Event_VoiceClosed'; payload: { by: string } };
+  | { event: 'Event_VoiceClosed'; payload: { by: string } }
+  // 旁观者
+  | { event: 'Event_SpectateReady'; payload: { playerId: string; playerName: string; viewId: string | null; hidden: boolean; muted: boolean; voiceBanned: boolean } }
+  | { event: 'Event_SpectatorWaiting'; payload: { text: string } }
+  | { event: 'Event_SpectatorAsk'; payload: { playerId: string; playerName: string } }
+  | { event: 'Event_SpectatorRejected'; payload: { reason: string; text?: string } }
+  | { event: 'Event_SpectateView'; payload: { targetPlayerId: string; targetName: string } }
+  | { event: 'Event_SpectatorMuted'; payload: { muted: boolean } }
+  | { event: 'Event_SpectatorLeft'; payload: Record<string, never> }
+  | { event: 'Event_ActionRejected'; payload: { reason: string } };

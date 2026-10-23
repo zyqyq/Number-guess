@@ -36,6 +36,10 @@ DEFAULTS: Dict[str, Any] = {
         # 每条形如 {"word": "广告", "addedAt": epoch, "hits": 0}
         "bannedWords": [],
     },
+    "roomList": {
+        # 是否在首页展示公开房间列表（只保留紧凑列表一种排布），由管理员开关
+        "enabled": True,
+    },
 }
 
 _DATA: Dict[str, Any] = copy.deepcopy(DEFAULTS)
@@ -113,20 +117,39 @@ def load_config() -> Dict[str, Any]:
 
 
 def save_config() -> bool:
-    """原子写回配置文件；失败时打印日志但不影响内存中的配置。"""
+    """写回配置文件，两级策略；失败时打印日志但不影响内存中的配置。
+
+    1) 首选「临时文件 + os.replace」原子替换，避免写一半时进程被杀导致文件损坏；
+    2) 若原子替换被环境拒绝（受限沙箱会拦截 rename、部分网络盘 / 只读挂载的
+       上级目录不允许 rename 等），退回到原地覆盖写——它能覆盖已有文件，
+       只是在写到一半被打断时有极小概率留下不完整内容。
+    """
+    payload = json.dumps(_DATA, ensure_ascii=False, indent=2) + "\n"
     tmp_path = f"{CONFIG_PATH}.tmp"
+
+    atomic_error: Optional[OSError] = None
     try:
         with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(_DATA, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
+            fh.write(payload)
         os.replace(tmp_path, CONFIG_PATH)
         return True
     except OSError as exc:
-        print(f"[config] 写入 {CONFIG_PATH} 失败：{exc}")
+        atomic_error = exc
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+    # 降级：直接覆盖目标文件
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        print(f"[config] 原子替换被拒绝（{atomic_error}），已退回原地覆盖写并成功")
+        return True
+    except OSError as exc:
+        print(
+            f"[config] 写入 {CONFIG_PATH} 失败：原子替换={atomic_error}；原地覆盖={exc}"
+        )
         return False
 
 
@@ -290,6 +313,27 @@ def remove_word(raw_word: str) -> Tuple[bool, str]:
             save_config()
             return True, word
     return False, "词库中没有该词"
+
+
+# ---------------------------------------------------------------- 首页房间列表
+
+
+def room_list_enabled() -> bool:
+    """首页是否展示公开房间列表（关闭后首页完全看不到该面板）。"""
+    raw = _DATA.get("roomList") or {}
+    value = raw.get("enabled", True)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def set_room_list_enabled(enabled: bool) -> Tuple[bool, str]:
+    state = "开启" if enabled else "关闭"
+    _DATA.setdefault("roomList", {})["enabled"] = bool(enabled)
+    if not save_config():
+        # 内存里已生效，但写盘失败（只读目录 / 沙箱拦截原子替换），重启后会退回默认值
+        return True, f"{state}（仅内存生效，写入 config.json 失败）"
+    return True, state
 
 
 # 模块导入即加载一次配置；管理后台修改后由对应指令负责 save + 热生效

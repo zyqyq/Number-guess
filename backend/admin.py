@@ -129,6 +129,17 @@ def _room_dict(room: Any, ref: float) -> dict:
             }
         )
     host = room.players.get(room.hostId)
+    # 旁观者：管理员可见全部（含 hidden 的隐身旁观），普通端只能看到非 hidden
+    spectators = [
+        {
+            "playerId": sid,
+            "playerName": spectator.playerName,
+            "hidden": sid in getattr(room, "spectatorHidden", set()),
+            "muted": sid in getattr(room, "spectatorMuted", set()),
+            "viewId": (getattr(room, "spectatorView", {}) or {}).get(sid),
+        }
+        for sid, spectator in getattr(room, "spectators", {}).items()
+    ]
     return {
         "roomId": room.roomId,
         "gamePhase": room.gamePhase,
@@ -141,8 +152,12 @@ def _room_dict(room: Any, ref: float) -> dict:
         "durationSeconds": round(_room_duration(room, ref), 1),
         "playerCount": len(room.players),
         "aliveCount": sum(1 for p in room.players.values() if p.isAlive),
+        # 房主是否把房间设为隐身（隐身房不出现在首页公开列表，管理员仍可见）
+        "isPrivate": bool(getattr(room, "isPrivate", False)),
         "currentTurnPlayerId": room.currentTurnPlayerId,
         "players": players,
+        "spectatorCount": len(spectators),
+        "spectators": spectators,
     }
 
 
@@ -191,6 +206,7 @@ def build_snapshot(rooms: Dict[str, Any]) -> dict:
     room_items.sort(key=lambda r: (r["gamePhase"] != "PLAYING", r["roomId"]))
     return {
         "serverTime": ref,
+        "roomList": {"enabled": app_config.room_list_enabled()},
         "terminals": term_registry.snapshot_terminals(),
         "rooms": room_items,
         "system": _system_dict(rooms),
@@ -268,6 +284,19 @@ async def execute_command(rooms: Dict[str, Any], message: dict) -> bool:
         return True
 
     # ------------------------------------------------------------ 安全设置
+    if cmd == "AdminSetRoomListEnabled":
+        raw = message.get("enabled")
+        if isinstance(raw, str):
+            raw = raw.strip().lower() in ("1", "true", "yes", "on")
+        ok, detail = app_config.set_room_list_enabled(bool(raw))
+        term_registry.log_event(
+            f"管理员{detail}首页房间列表"
+            if ok
+            else f"切换首页房间列表失败：{detail}",
+            "info" if ok else "warn",
+        )
+        return True
+
     if cmd == "AdminReloadConfig":
         # 管理员改完 config.json 后手动热生效（口令、开关等启动时加载的字段）
         app_config.load_config()

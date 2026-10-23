@@ -2,12 +2,28 @@
   <div class="lobby-page">
     <div class="lobby-wrap">
       <div class="lobby-container">
-      <!-- 房间号展示 -->
+      <!-- 房间号展示：复制房间号 / 复制分享链接 / 隐身状态 -->
       <div class="room-header">
-        <h1>房间号：<span class="room-id">{{ roomId }}</span></h1>
-        <button class="copy-btn" @click="copyRoomId" title="复制房间号">📋</button>
+        <h1>
+          房间号：<span class="room-id">{{ roomId }}</span>
+          <span v-if="isSpectator" class="spectate-badge" title="你正在旁观，不会影响牌局">👁 旁观中</span>
+          <span v-if="isPrivate" class="private-badge" title="隐身房间不出现在首页房间列表">🔒 隐身中</span>
+        </h1>
+        <div class="room-header-actions">
+          <button class="copy-btn" @click="copyRoomId" title="复制房间号">📋</button>
+          <button class="copy-btn" @click="copyShareLink" title="复制分享链接（对方打开即自动填入房间号）">🔗</button>
+        </div>
       </div>
       
+      <!-- 旁观者提示：大厅就是「等待界面」，只读，不能替房主开局 -->
+      <div v-if="isSpectator" class="spectate-banner">
+        <span class="sb-icon">👁</span>
+        <span class="sb-text">
+          旁观模式 · 正在等待房主开始游戏
+          <small>牌局开始后自动切到观战界面；旁观不占玩家名额</small>
+        </span>
+      </div>
+
       <!-- 玩家列表 -->
       <div class="players-section">
         <h2>玩家列表 ({{ players.length }}/4)</h2>
@@ -43,9 +59,29 @@
           </div>
         </div>
       </div>
-      
-      <!-- 房主操作区 -->
-      <div v-if="isHost" class="host-actions">
+
+      <!-- 旁观者列表：房主可就地禁言 / 踢出 -->
+      <div v-if="spectators.length" class="spectators-section">
+        <h2>旁观者 ({{ spectators.length }})</h2>
+        <div class="spectator-list">
+          <div v-for="s in spectators" :key="s.playerId" class="spectator-item">
+            <span class="spectator-name">
+              👁 {{ s.playerName }}
+              <span v-if="s.muted" class="muted-badge">已禁言</span>
+            </span>
+            <div v-if="isHost" class="spectator-actions">
+              <button class="mini-btn" type="button" @click="toggleSpectatorMute(s)">
+                {{ s.muted ? '解除禁言' : '禁言' }}
+              </button>
+              <button class="mini-btn danger" type="button" @click="kickSpectator(s.playerId)">踢出</button>
+            </div>
+            <span v-else class="spectator-hint">旁观中</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 房主操作区（旁观者不显示） -->
+      <div v-if="isHost && !isSpectator" class="host-actions">
         <button 
           class="start-btn"
           :disabled="players.length < 4"
@@ -53,20 +89,39 @@
         >
           {{ players.length < 4 ? `还需 ${4 - players.length} 名玩家（可添加机器人）` : '🎮 开始游戏' }}
         </button>
-        <button 
-          class="bot-add-btn"
-          :disabled="players.length >= 4"
-          @click="handleAddBot"
-        >
-          {{ players.length >= 4 ? '房间已满 4/4' : '🤖 添加机器人' }}
-        </button>
+        <!-- 机器人 / 房间隐身：同一行，各占一半宽度 -->
+        <div class="host-action-row">
+          <button 
+            class="bot-add-btn"
+            :disabled="players.length >= 4"
+            @click="handleAddBot"
+          >
+            {{ players.length >= 4 ? '房间已满 4/4' : '🤖 添加机器人' }}
+          </button>
+          <div class="privacy-wrap">
+            <button
+              class="privacy-btn"
+              :class="{ active: isPrivate }"
+              :aria-pressed="isPrivate"
+              @click="togglePrivacy"
+            >
+              {{ isPrivate ? '🔓 解除房间隐身' : '🔒 房间隐身' }}
+            </button>
+            <!-- 说明文字仅在鼠标悬停 / 键盘聚焦时浮出 -->
+            <span class="privacy-tip" role="tooltip">
+              {{ isPrivate ? '当前已隐身，不在首页房间列表显示' : '开启后不在首页房间列表显示' }}
+            </span>
+          </div>
+        </div>
         <button class="dismiss-btn" @click="handleDismissRoom">解散房间</button>
       </div>
       
       <!-- 非房主提示 -->
       <div v-else class="non-host-message">
-        <p>等待房主开始游戏...</p>
-        <button class="leave-btn" @click="handleLeaveRoom">退出房间</button>
+        <p>{{ isSpectator ? '等待房主开始游戏…（旁观中，不占玩家名额）' : '等待房主开始游戏...' }}</p>
+        <button class="leave-btn" @click="handleLeaveRoom">
+          {{ isSpectator ? '退出旁观' : '退出房间' }}
+        </button>
       </div>
       
       <!-- 反馈信息 -->
@@ -79,13 +134,16 @@
       <aside class="lobby-chat">
         <ChatPanel
           :roomId="roomId"
-          :playerId="currentPlayerId"
-          :playerName="playerName"
-          :isHost="isHost"
+          :playerId="isSpectator ? spectatorId : currentPlayerId"
+          :playerName="isSpectator ? (spectatorName || playerName) : playerName"
+          :isHost="isHost && !isSpectator"
           :players="chatPlayers"
         />
       </aside>
     </div>
+
+    <!-- 游戏中旁观申请（房主审批） -->
+    <SpectatorAskModal :ask="pendingAsk" @respond="respondSpectator" />
   </div>
 </template>
 
@@ -96,6 +154,7 @@ import { wsService } from '@/services/websocket';
 import { getClientId } from '@/services/presence';
 import { useGameStore } from '@/stores/game';
 import ChatPanel from '@/components/ChatPanel.vue';
+import SpectatorAskModal from '@/components/SpectatorAskModal.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -104,16 +163,29 @@ const gameStore = useGameStore();
 const roomId = ref('');
 const playerName = ref('');
 const isHost = ref(false);
+// 旁观者：牌局没开始时同样待在本页（大厅即等待界面），只读、没有房主操作
+const isSpectator = computed(() => String(route.query.spectate || '') === '1');
+const spectatorId = ref(gameStore.spectatorId);
+const spectatorName = ref(gameStore.spectatorName);
+// 房主可把房间设为隐身：隐身房间不出现在首页公开列表（拿到房间号或分享链接仍可加入）
+const isPrivate = ref(false);
 const players = ref<Array<{ playerId: string; playerName: string; isHost: boolean; isBot?: boolean }>>([]);
+// 旁观者（房主可禁言 / 踢出）
+const spectators = ref<Array<{ playerId: string; playerName: string; muted: boolean }>>([]);
+// 游戏进行中收到的旁观申请（房主弹窗审批）
+const pendingAsk = ref<{ playerId: string; playerName: string } | null>(null);
 const feedbackMsg = ref('');
 const feedbackType = ref<'success' | 'error'>('success');
 const currentPlayerId = computed(() => `${roomId.value}_${playerName.value}`);
 
-// 聊天室的在线人数与成员展示用
+// 聊天室的在线人数与成员展示用（含旁观者，语音成员列表才不会出现裸 id）
 const chatPlayers = computed(() => {
   const map: Record<string, { playerId: string; playerName: string; isBot?: boolean }> = {};
   for (const p of players.value) {
     map[p.playerId] = { playerId: p.playerId, playerName: p.playerName, isBot: p.isBot };
+  }
+  for (const s of spectators.value) {
+    map[s.playerId] = { playerId: s.playerId, playerName: s.playerName, isBot: false };
   }
   return map;
 });
@@ -128,11 +200,22 @@ const updatePlayerList = (state: any) => {
     }));
 
     // 房主身份以服务端为准：手动填房号加入的第一人同样会成为房主
-    if ((state as any).hostId) {
+    if ((state as any).hostId && !isSpectator.value) {
       isHost.value = (state as any).hostId === currentPlayerId.value;
     }
+    if (isSpectator.value) isHost.value = false;
+
+    // 隐身状态同样以服务端为准（房主切换后服务端会广播 state）
+    isPrivate.value = !!(state as any).isPrivate;
+
+    // 旁观者列表（隐身旁观不会下发到这里）
+    spectators.value = ((state as any).spectators || []).map((s: any) => ({
+      playerId: s.playerId,
+      playerName: s.playerName,
+      muted: !!s.muted
+    }));
     
-    if (players.value.length === 4) {
+    if (players.value.length === 4 && !isSpectator.value) {
       showFeedback('房间已满，可以开始游戏了！', 'success');
     }
   }
@@ -142,19 +225,21 @@ onMounted(() => {
   // 从路由参数获取信息
   roomId.value = (route.query.roomId as string) || '';
   playerName.value = (route.query.playerName as string) || '';
-  isHost.value = route.query.isHost === 'true';
+  isHost.value = !isSpectator.value && route.query.isHost === 'true';
   
   if (!roomId.value || !playerName.value) {
     router.push('/');
     return;
   }
   
-  // 初始化玩家列表（包含自己）
-  players.value = [{
-    playerId: 'local',
-    playerName: playerName.value,
-    isHost: isHost.value
-  }];
+  // 初始化玩家列表（包含自己；旁观者自己不在玩家列表里，由服务端快照接管）
+  players.value = isSpectator.value
+    ? []
+    : [{
+        playerId: 'local',
+        playerName: playerName.value,
+        isHost: isHost.value
+      }];
   
   // 先设回调，再连 WebSocket，确保不丢失消息
   wsService.setStateUpdateCallback((state: any) => {
@@ -165,6 +250,14 @@ onMounted(() => {
     const phase = String((state as any).gamePhase || '').toUpperCase();
     if (phase === 'PLAYING') {
       gameStore.updateGameState(state as any);
+      if (isSpectator.value) {
+        // 旁观者：连接复用，保持旁观身份与代入视角
+        router.push({
+          path: '/game',
+          query: { roomId: roomId.value, playerName: playerName.value, spectate: '1' }
+        });
+        return;
+      }
       gameStore.setMyPlayerId(currentPlayerId.value);
       router.push({
         path: '/game',
@@ -187,8 +280,51 @@ onMounted(() => {
   // 服务端拒绝接入（如保留房间号）：提示后回首页，不再自动重连
   wsService.setFatalCallback((message: string) => {
     wsService.disconnect();
+    // D2：房间满员时自动转旁观，而不是把人挡回首页
+    if (message.includes('房间已满')) {
+      alert('房间已满员，将以旁观者身份进入（牌局进行中需房主批准）');
+      router.push({
+        path: '/game',
+        query: { roomId: roomId.value, playerName: playerName.value, spectate: '1' }
+      });
+      return;
+    }
     alert(message);
     router.push('/');
+  });
+
+  // 旁观相关事件：本页处理「游戏中收到的旁观申请」、本页作为旁观者时的身份与退出
+  wsService.setSpectatorEventCallback((event: string, payload: any) => {
+    if (event === 'Event_SpectatorAsk') {
+      pendingAsk.value = { playerId: payload.playerId, playerName: payload.playerName };
+      return;
+    }
+    if (event === 'Event_SpectateReady') {
+      spectatorId.value = payload?.playerId || '';
+      spectatorName.value = payload?.playerName || '';
+      gameStore.setSpectator(spectatorId.value, spectatorName.value, payload?.viewId || '');
+      if (payload?.viewId) gameStore.setMyPlayerId(payload.viewId);
+      return;
+    }
+    if (event === 'Event_SpectateView' && payload?.targetPlayerId) {
+      gameStore.setSpectator(spectatorId.value, spectatorName.value, payload.targetPlayerId);
+      gameStore.setMyPlayerId(payload.targetPlayerId);
+      return;
+    }
+    if (event === 'Event_SpectatorRejected') {
+      alert(payload?.text || payload?.reason || '无法旁观该房间');
+      wsService.disconnect();
+      router.push('/');
+      return;
+    }
+    if (event === 'Event_SpectatorLeft') {
+      wsService.disconnect();
+      router.push('/');
+      return;
+    }
+  });
+  wsService.setChatRejectedCallback((payload: { reason: string }) => {
+    showFeedback(payload.reason, 'error');
   });
 
   // 如果已有连接（从 GameRoom 重置后跳转而来），直接读取当前状态
@@ -199,7 +335,12 @@ onMounted(() => {
     }
   } else {
     // 首次进入或连接已断开，重新连接（WS 地址跟随当前访问主机，支持局域网其他设备接入）
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}?clientId=${getClientId()}`;
+    let wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}?clientId=${getClientId()}`;
+    if (isSpectator.value) {
+      wsUrl += '&spectate=1';
+      const adminToken = route.query.adminToken;
+      if (adminToken) wsUrl += `&adminToken=${encodeURIComponent(String(adminToken))}`;
+    }
     wsService.connectWithUrl(wsUrl);
   }
 });
@@ -211,6 +352,46 @@ const copyRoomId = async () => {
   } catch (err) {
     showFeedback('复制失败，请手动复制', 'error');
   }
+};
+
+const copyShareLink = async () => {
+  const url = `${window.location.origin}/?roomId=${roomId.value}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    showFeedback('分享链接已复制，发给好友即可直接进入本房', 'success');
+  } catch (err) {
+    showFeedback(`复制失败，请手动复制：${url}`, 'error');
+  }
+};
+
+const togglePrivacy = () => {
+  wsService.send({ cmd: 'SetRoomPrivacy', private: !isPrivate.value });
+};
+
+/** 房主审批旁观申请（弹窗回调） */
+const respondSpectator = (payload: { allow: boolean; allowChat: boolean; allowVoice: boolean }) => {
+  const ask = pendingAsk.value;
+  if (!ask) return;
+  wsService.send({
+    cmd: 'SpectatorRespond',
+    playerId: ask.playerId,
+    allow: payload.allow,
+    allowChat: payload.allowChat,
+    allowVoice: payload.allowVoice
+  });
+  showFeedback(
+    payload.allow ? `已允许 ${ask.playerName} 旁观` : `已拒绝 ${ask.playerName} 的旁观申请`,
+    payload.allow ? 'success' : 'error'
+  );
+  pendingAsk.value = null;
+};
+
+const kickSpectator = (playerId: string) => {
+  wsService.send({ cmd: 'KickSpectator', playerId });
+};
+
+const toggleSpectatorMute = (s: { playerId: string; playerName: string; muted: boolean }) => {
+  wsService.send({ cmd: 'MuteSpectator', playerId: s.playerId, muted: !s.muted });
 };
 
 const handleStartGame = () => {
@@ -236,12 +417,22 @@ const handleRemoveBot = (botId: string) => {
 
 const handleDismissRoom = () => {
   if (confirm('确定要解散房间吗？')) {
+    // 必须先告诉服务端：只断开连接的话，房间对象会一直留在内存里，
+    // 首页房间列表和管理后台都还能看到它；用同一个房间号重开时，
+    // 服务端会认为房间还在，于是继承上一局的聊天记录（这就是那个 bug）。
+    wsService.send({ cmd: 'DissolveRoom' });
     wsService.disconnect();
     router.push('/');
   }
 };
 
 const handleLeaveRoom = () => {
+  // 主动退出 ≠ 断线：服务端会立刻把人从名单里移除，不再留占位等重连
+  if (isSpectator.value) {
+    wsService.send({ cmd: 'SpectatorLeave' });
+  } else {
+    wsService.send({ cmd: 'LeaveRoom' });
+  }
   wsService.disconnect();
   router.push('/');
 };
@@ -286,10 +477,13 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
 }
 
-/* 右侧聊天栏：固定宽度、内部滚动 */
+/* 右侧聊天栏：固定宽度、固定上下长度，多余消息在卡片内滚动 */
 .lobby-chat {
   flex: 0 0 300px;
   width: 300px;
+  height: min(720px, calc(100vh - 80px));
+  max-height: min(720px, calc(100vh - 80px));
+  align-self: flex-start;
   background: white;
   border-radius: 16px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
@@ -355,6 +549,156 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
 .copy-btn:hover {
   background: #667eea;
   color: white;
+}
+
+.room-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.private-badge {
+  margin-left: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #c2751b;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.spectate-badge {
+  margin-left: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* 旁观者在大厅（等待界面）看到的通栏提示 */
+.spectate-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 10px 14px;
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+  background: #eef2ff;
+  color: #3730a3;
+  text-align: left;
+}
+
+.spectate-banner .sb-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.spectate-banner .sb-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.spectate-banner .sb-text small {
+  font-size: 11px;
+  font-weight: 400;
+  color: #5b62a8;
+}
+
+/* 机器人 / 房间隐身：同一行、各占一半宽度（grid 保证严格等宽） */
+.host-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.host-action-row > * {
+  min-width: 0;
+}
+
+.host-action-row .bot-add-btn,
+.host-action-row .privacy-btn {
+  width: 100%;
+  padding: 13px 8px;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+/* 隐身按钮的说明文字：默认隐藏，悬停 / 聚焦时才浮出 */
+.privacy-wrap {
+  position: relative;
+  display: flex;
+}
+
+.privacy-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(38, 34, 58, 0.95);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+  z-index: 6;
+}
+
+/* 小三角 */
+.privacy-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgba(38, 34, 58, 0.95);
+}
+
+/* 悬停时浮出；键盘 Tab 聚焦（focus-visible）时也浮出。
+   这里刻意不用 :focus-within —— 鼠标点击按钮后按钮会留在聚焦态，
+   :focus-within 会让说明文字一直挂着，直到点击别处才消失。 */
+.privacy-wrap:hover .privacy-tip,
+.privacy-btn:focus-visible + .privacy-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.privacy-btn {
+  padding: 12px;
+  background: #fff;
+  border: 2px solid #667eea;
+  color: #4a4fa2;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.privacy-btn:hover {
+  background: #eef0ff;
+}
+
+.privacy-btn.active {
+  background: #fff4e5;
+  border-color: #e0a35a;
+  color: #b4690e;
 }
 
 .players-section h2 {
@@ -543,5 +887,93 @@ const showFeedback = (msg: string, type: 'success' | 'error') => {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------------------------------------------------- 旁观者 */
+.spectators-section {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #f6f7ff;
+  border: 1px solid #e2e6f7;
+}
+
+.spectators-section h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: #4a4fa2;
+}
+
+.spectator-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spectator-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e6e9f6;
+}
+
+.spectator-name {
+  font-size: 13px;
+  color: #3c4160;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #fff1e6;
+  color: #b56a1c;
+  font-size: 11px;
+}
+
+.spectator-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mini-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #cfd4ef;
+  background: #fff;
+  color: #4a4fa2;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mini-btn:hover {
+  border-color: #667eea;
+  background: #f2f3ff;
+}
+
+.mini-btn.danger {
+  border-color: #f0c9c4;
+  color: #c0392b;
+}
+
+.mini-btn.danger:hover {
+  border-color: #e57368;
+  background: #fff4f2;
+}
+
+.spectator-hint {
+  font-size: 12px;
+  color: #9096ad;
+  flex-shrink: 0;
 }
 </style>

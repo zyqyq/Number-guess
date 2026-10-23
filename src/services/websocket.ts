@@ -29,6 +29,8 @@ class WebSocketService {
   private onChatRejected?: (payload: { reason: string; word?: string }) => void;
   // 语音通话：所有 Event_Voice* 统一走这里，由语音引擎自行分发
   private onVoiceEvent?: (event: string, payload: any) => void;
+  // 旁观者：审批 / 视角 / 禁言 / 只读拦截等事件统一走这里
+  private onSpectatorEvent?: (event: string, payload: any) => void;
   private fatal = false;
 
   constructor() {
@@ -215,6 +217,17 @@ class WebSocketService {
       case 'Event_VoiceClosed':
         this.onVoiceEvent?.(data.event, data.payload);
         break;
+      // ---------------- 旁观者 ----------------
+      case 'Event_SpectateReady':
+      case 'Event_SpectatorWaiting':
+      case 'Event_SpectatorAsk':
+      case 'Event_SpectatorRejected':
+      case 'Event_SpectateView':
+      case 'Event_SpectatorMuted':
+      case 'Event_SpectatorLeft':
+      case 'Event_ActionRejected':
+        this.onSpectatorEvent?.(data.event, data.payload);
+        break;
       default:
         console.warn('[WS] Unknown event:', data.event);
     }
@@ -280,6 +293,7 @@ class WebSocketService {
   setChatCallback(cb: (message: ChatMessage) => void) { this.onChat = cb; }
   setChatRejectedCallback(cb: (payload: { reason: string; word?: string }) => void) { this.onChatRejected = cb; }
   setVoiceEventCallback(cb: (event: string, payload: any) => void) { this.onVoiceEvent = cb; }
+  setSpectatorEventCallback(cb: (event: string, payload: any) => void) { this.onSpectatorEvent = cb; }
 }
 
 export const wsService = new WebSocketService();

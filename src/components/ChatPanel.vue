@@ -309,8 +309,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .chat-panel {
+  /* 卡片本身是固定尺寸的容器：头尾不动，中间消息区在卡片内滚动，
+     消息再多也只让 .msg-list 出现滚动条，不会把整张卡片撑高 */
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  max-height: 100%;
   padding: 0;
   overflow: hidden;
 }

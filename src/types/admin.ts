@@ -25,6 +25,16 @@ export interface AdminRoomPlayer {
   clientId: string | null;
 }
 
+export interface AdminRoomSpectator {
+  playerId: string;
+  playerName: string;
+  /** 管理员隐身旁观（普通玩家看不到） */
+  hidden: boolean;
+  muted: boolean;
+  /** 代入的参赛者 id */
+  viewId: string | null;
+}
+
 export interface AdminRoom {
   roomId: string;
   gamePhase: 'WAITING' | 'PLAYING' | 'GAME_OVER';
@@ -37,8 +47,11 @@ export interface AdminRoom {
   durationSeconds: number;
   playerCount: number;
   aliveCount: number;
+  isPrivate?: boolean;
   currentTurnPlayerId: string | null;
   players: AdminRoomPlayer[];
+  spectatorCount?: number;
+  spectators?: AdminRoomSpectator[];
 }
 
 export interface AdminSystem {
@@ -93,6 +106,8 @@ export interface AdminSecurity {
 
 export interface AdminSnapshot {
   serverTime: number;
+  /** 首页房间列表开关（关闭后首页完全看不到该面板） */
+  roomList?: { enabled: boolean };
   terminals: AdminTerminal[];
   rooms: AdminRoom[];
   system: AdminSystem;

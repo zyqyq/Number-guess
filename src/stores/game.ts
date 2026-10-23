@@ -55,6 +55,27 @@ export const useGameStore = defineStore('game', () => {
     gameState.value = state;
   };
 
+  // ---------------------------------------------------------------- 旁观身份
+  // 观众会在「等待界面(大厅)」和「游戏页」之间来回跳，连接是复用的，
+  // Event_SpectateReady 只会发一次，所以身份要存在 store 里跨页面共享。
+  const spectatorId = ref('');
+  const spectatorName = ref('');
+  const spectatorView = ref('');
+  const setSpectator = (id: string, name: string, viewId?: string | null) => {
+    spectatorId.value = id || '';
+    spectatorName.value = name || '';
+    if (viewId) spectatorView.value = viewId;
+  };
+
+  /** 彻底清空：换房间 / 解散重开时必须调，否则会残留上一间的聊天记录与手牌 */
+  const resetState = () => {
+    gameState.value = null;
+    myPlayerId.value = null;
+    spectatorId.value = '';
+    spectatorName.value = '';
+    spectatorView.value = '';
+  };
+
   return {
     myPlayerId,
     gameState,
@@ -64,6 +85,11 @@ export const useGameStore = defineStore('game', () => {
     isMyTurn,
     isGameOver,
     setMyPlayerId,
-    updateGameState
+    updateGameState,
+    spectatorId,
+    spectatorName,
+    spectatorView,
+    setSpectator,
+    resetState
   };
 });

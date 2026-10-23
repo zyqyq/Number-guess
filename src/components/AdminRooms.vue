@@ -23,7 +23,10 @@
             <span class="room-label">房间</span>
             <strong class="room-no">{{ room.roomId }}</strong>
           </div>
-          <span class="phase-badge">{{ phaseLabel(room.gamePhase) }}</span>
+          <div class="room-badges">
+            <span v-if="room.isPrivate" class="private-badge" title="隐身房间不出现在首页列表">🔒 隐身</span>
+            <span class="phase-badge">{{ phaseLabel(room.gamePhase) }}</span>
+          </div>
         </header>
 
         <dl class="room-meta">
@@ -48,9 +51,23 @@
           <li v-if="!room.players.length" class="member empty">房间内暂无玩家</li>
         </ul>
 
+        <!-- 旁观者（管理员可见全部，含隐身旁观） -->
+        <ul v-if="room.spectators && room.spectators.length" class="member-list spectator-member-list">
+          <li class="member spectator-label">👁 旁观者 {{ room.spectators.length }}</li>
+          <li v-for="spectator in room.spectators" :key="spectator.playerId" class="member">
+            <span class="member-dot"></span>
+            <span class="member-name">{{ spectator.playerName }}</span>
+            <span v-if="spectator.hidden" class="tag hidden">隐身</span>
+            <span v-if="spectator.muted" class="tag offline">禁言</span>
+          </li>
+        </ul>
+
         <footer class="room-actions">
           <span class="room-created">创建于 {{ fmtDateTime(room.createdAt) }}</span>
           <div class="action-group">
+            <button class="ghost-btn" title="以管理员身份隐身进入该房间观看（不发言、不进语音）" @click="spectateRoom(room)">
+              隐身旁观
+            </button>
             <button class="ghost-btn" @click="act('AdminResetRoom', room)">重置牌局</button>
             <button class="danger-btn" @click="closeRoom(room)">关闭房间</button>
           </div>
@@ -89,6 +106,11 @@ const closeRoom = (room: AdminRoom) => {
 const kickPlayer = (room: AdminRoom, player: AdminRoomPlayer) => {
   if (!window.confirm(`确定把「${player.playerName}」移出房间 ${room.roomId} 吗？`)) return;
   act('AdminKickPlayer', room, player.playerId);
+};
+
+/** 隐身旁观：由 AdminPage 签发一次性凭证后在新标签打开旁观窗口 */
+const spectateRoom = (room: AdminRoom) => {
+  emit('action', { cmd: 'AdminSpectate', roomId: room.roomId });
 };
 </script>
 
@@ -140,6 +162,21 @@ const kickPlayer = (room: AdminRoom, player: AdminRoomPlayer) => {
 .empty-icon {
   font-size: 28px;
   margin-bottom: 8px;
+}
+
+.room-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.private-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #b4690e;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .room-grid {
@@ -402,5 +439,25 @@ const kickPlayer = (room: AdminRoom, player: AdminRoomPlayer) => {
   color: #fff;
   background: #dc2626;
   border-color: #dc2626;
+}
+
+/* 旁观者分区 */
+.spectator-member-list {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.spectator-label {
+  font-size: 12px;
+  color: #6366f1;
+  font-weight: 600;
+  padding-left: 2px;
+}
+
+.tag.hidden {
+  color: #6d28d9;
+  background: #f3e8ff;
+  border: 1px solid #ddd6fe;
 }
 </style>

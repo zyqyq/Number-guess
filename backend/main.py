@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.websockets import WebSocketState
 
 try:  # 兼容 `python -m uvicorn backend.main:app` 与直接运行两种导入方式
     from . import admin as admin_module
@@ -138,6 +139,21 @@ class GameRoom:
         # 信令（offer/answer/ICE）通过房间 WebSocket 转发
         self.voiceParticipants: List[str] = []
         self.voiceHostMuted: set[str] = set()
+        # 房间列表可见性：房主可把房间设为隐身，隐身房间不出现在首页公开列表
+        # （管理后台走 /ws/admin 快照，仍能看到全部房间）
+        self.isPrivate = False
+        # ------------------------------------------------------------ 旁观者
+        # 旁观者与参赛者分表存放：start_game / turnOrder / deal_initial_hands /
+        # check_game_over 全都只看 players，旁观者天然不参与牌局计算。
+        self.spectators: Dict[str, Player] = {}
+        self.spectator_conns: Dict[str, WebSocket] = {}
+        # 视角代入（D1）：旁观者 -> 代入的参赛者 id；None 表示尚未选择
+        self.spectatorView: Dict[str, Optional[str]] = {}
+        self.spectatorMuted: set[str] = set()        # 被房主禁言
+        self.spectatorVoiceBanned: set[str] = set()  # 审批时未授予语音
+        self.spectatorHidden: set[str] = set()       # 管理员隐身旁观（对其他端不可见）
+        # 游戏中待审批：player_id -> {playerName, event, decision, allowChat, allowVoice}
+        self.spectatorPending: Dict[str, dict] = {}
 
     def add_bot(self) -> Optional[Player]:
         """在等待阶段由房主添加一个机器人，房间人数上限仍为 4。"""
@@ -259,6 +275,61 @@ class GameRoom:
         self.players.pop(player_id, None)
         self.ws_connections.pop(player_id, None)
 
+    # ---------------------------------------------------------- 旁观者
+
+    def member_of(self, member_id: str) -> Optional[Player]:
+        """参赛者与旁观者统一取 Player（聊天 / 语音需要昵称）。"""
+        return self.players.get(member_id) or self.spectators.get(member_id)
+
+    def conn_of(self, member_id: str) -> Optional[WebSocket]:
+        """参赛者与旁观者的连接统一取出（状态推送 / 信令转发共用）。"""
+        return self.ws_connections.get(member_id) or self.spectator_conns.get(member_id)
+
+    def add_spectator(self, player: Player, ws: WebSocket, hidden: bool = False):
+        self.spectators[player.playerId] = player
+        self.spectator_conns[player.playerId] = ws
+        if hidden:
+            self.spectatorHidden.add(player.playerId)
+
+    def remove_spectator(self, spectator_id: str) -> Optional[Player]:
+        """移出旁观者并清掉所有附带标记（视角 / 禁言 / 隐身 / 语音限制）。"""
+        self.spectator_conns.pop(spectator_id, None)
+        self.spectatorView.pop(spectator_id, None)
+        self.spectatorMuted.discard(spectator_id)
+        self.spectatorVoiceBanned.discard(spectator_id)
+        self.spectatorHidden.discard(spectator_id)
+        return self.spectators.pop(spectator_id, None)
+
+    def visible_spectators(self) -> List[dict]:
+        """下发给普通端的旁观者列表；管理员隐身旁观不在其中。"""
+        return [
+            {
+                "playerId": pid,
+                "playerName": player.playerName,
+                "muted": pid in self.spectatorMuted,
+                "voiceBanned": pid in self.spectatorVoiceBanned,
+                "viewId": self.spectatorView.get(pid),
+            }
+            for pid, player in self.spectators.items()
+            if pid not in self.spectatorHidden
+        ]
+
+    def default_spectate_view(self) -> Optional[str]:
+        """默认视角：回合顺序里的第一位参赛者（回合未开始时取第一个玩家）。"""
+        for pid in self.turnOrder:
+            if pid in self.players:
+                return pid
+        return next(iter(self.players), None)
+
+    def resolve_spectate_view(self, spectator_id: str) -> Optional[str]:
+        """取旁观者当前代入的玩家；目标中途退出则回退到默认视角。"""
+        target = self.spectatorView.get(spectator_id)
+        if target in self.players:
+            return target
+        target = self.default_spectate_view()
+        self.spectatorView[spectator_id] = target
+        return target
+
     def get_state(self) -> dict:
         return {
             "roomId": self.roomId,
@@ -282,18 +353,34 @@ class GameRoom:
                 "participants": list(self.voiceParticipants),
                 "hostMuted": list(self.voiceHostMuted),
             },
+            # 房主可把房间设为隐身（不影响房内玩法，只影响首页公开列表）
+            "isPrivate": self.isPrivate,
+            # 旁观者列表（含各自代入的视角；管理员隐身旁观不在此列）
+            "spectators": self.visible_spectators(),
         }
 
     async def broadcast_state(self):
+        """状态双通道：参赛者与旁观者各推一份。
+
+        内容完全一致——手牌裁剪发生在前端 store（`myHand` 把「自己」的手牌
+        显示为 ?），因此旁观者只要把 myPlayerId 设成代入的玩家即可获得与
+        真身一模一样的视角，服务端不必维护第二套裁剪逻辑。
+        """
         state = self.get_state()
         for player_id, ws in list(self.ws_connections.items()):
             try:
                 await ws.send_json({"event": "Event_StateUpdate", "payload": state})
             except Exception as exc:
                 print(f"发送状态给 {player_id} 失败：{exc}")
+        for spectator_id, ws in list(self.spectator_conns.items()):
+            try:
+                await ws.send_json({"event": "Event_StateUpdate", "payload": state})
+            except Exception as exc:
+                print(f"发送状态给旁观者 {spectator_id} 失败：{exc}")
 
     async def send_to_player(self, player_id: str, event: str, payload: Any):
-        ws = self.ws_connections.get(player_id)
+        """按 id 投递事件：参赛者与旁观者共用一张连接查找表。"""
+        ws = self.conn_of(player_id)
         if not ws:
             return
         try:
@@ -310,10 +397,15 @@ class GameRoom:
             del self.chatHistory[: len(self.chatHistory) - CHAT_HISTORY_KEEP]
 
     async def broadcast_chat(self, message: dict):
-        """房间内广播一条聊天消息（含发送者本人，前端不做本地回显）。"""
+        """房间内广播一条聊天消息（含发送者本人，前端不做本地回显）。
+
+        旁观者同样收得到（否则聊天室只剩一半上下文）；被禁言只是不能发。
+        """
         self.push_chat(message)
         for pid in list(self.ws_connections.keys()):
             await self.send_to_player(pid, "Event_Chat", message)
+        for sid in list(self.spectator_conns.keys()):
+            await self.send_to_player(sid, "Event_Chat", message)
 
     def next_chat_id(self) -> str:
         self.chatSeq += 1
@@ -768,6 +860,72 @@ async def cmd_kick_player(room: GameRoom, kicker_id: str, kicked_id: Optional[st
         room.start_bot_driver()
 
 
+async def cmd_leave_room(room: GameRoom, player_id: str):
+    """玩家主动退出房间。
+
+    与「断线」严格区分：断线只把 isOnline 置 False 并保留占位等对方重连；
+    主动退出立刻从名单里移除，其他人不会再看到一个永远不在的占位。
+    房主退出时把房主交给下一位真人；房里没有真人了就直接关掉房间。
+    """
+    player = room.players.get(player_id)
+    if player is None:
+        return
+    name = player.playerName
+
+    if player_id == room.hostId:
+        successor = next(
+            (pid for pid, p in room.players.items() if pid != player_id and not p.isBot),
+            None,
+        )
+        if successor is None:
+            # 没有别的真人接任，房间留着也没人能开局
+            await admin_close_room(room, by="房主离开")
+            return
+        room.hostId = successor
+        new_host = room.players[successor].playerName
+        term_registry.log_event(f"房主退出房间 {room.roomId}，{new_host} 接任房主", "info")
+        await room.broadcast_chat(
+            system_chat(room, f"{name} 离开了房间，{new_host} 成为新房主")
+        )
+
+    was_current = room.currentTurnPlayerId == player_id
+    if player_id in room.voiceParticipants:
+        # 先退出语音（此时玩家还在 players 里，系统消息能带上昵称）
+        await cmd_voice_leave(room, player_id, notify_chat=False)
+    room.ws_connections.pop(player_id, None)
+    room.remove_player(player_id)
+    room.turnOrder = [pid for pid in room.turnOrder if pid != player_id]
+    # 旁观者正代入此人时回退到仍在座的第一位
+    for sid, view in list(room.spectatorView.items()):
+        if view == player_id:
+            room.spectatorView[sid] = room.default_spectate_view()
+
+    await room.broadcast_chat(system_chat(room, f"{name} 离开了房间"))
+    if was_current and room.gamePhase == "PLAYING":
+        room.currentTurnPlayerId = None
+        await next_turn(room)
+        return
+    await room.broadcast_state()
+
+
+# 等人阶段断线多久后彻底移出房间（玩家在宽限期内用同一昵称重连不会被误删）
+DISCONNECT_GRACE_SECONDS = 45.0
+
+
+async def remove_offline_after_grace(room: GameRoom, player_id: str):
+    """等人阶段长时间离线（直接关标签页而不是点退出）的玩家，宽限期后移出名单。"""
+    await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+    player = room.players.get(player_id)
+    if player is None or player.isOnline or player_id in room.ws_connections:
+        return
+    if room.gamePhase != "WAITING":
+        return
+    term_registry.log_event(
+        f"{player.playerName} 长时间离线，已从房间 {room.roomId} 移除", "info"
+    )
+    await cmd_leave_room(room, player_id)
+
+
 async def cmd_add_bot(room: GameRoom, player_id: str):
     if player_id != room.hostId or room.gamePhase != "WAITING":
         return
@@ -817,8 +975,15 @@ def system_chat(room: GameRoom, text: str) -> dict:
 
 
 async def cmd_send_chat(room: GameRoom, player_id: str, text: Any):
-    player = room.players.get(player_id)
+    player = room.member_of(player_id)
     if player is None or player.isBot:
+        return
+    # 旁观者发言：受房主禁言约束（管理员隐身旁观一律禁言）
+    is_spectator = player_id not in room.players
+    if is_spectator and player_id in room.spectatorMuted:
+        await room.send_to_player(
+            player_id, "Event_ChatRejected", {"reason": "你已被房主禁言，暂时不能发言"}
+        )
         return
     raw = str(text or "").strip()
     if not raw:
@@ -858,17 +1023,322 @@ async def cmd_send_chat(room: GameRoom, player_id: str, text: Any):
             "text": raw,
             "ts": now,
             "system": False,
+            # 旁观者发言带「旁观」徽标，与参赛者区分
+            "spectator": is_spectator,
         }
     )
+
+
+# ---------------------------------------------------------------- 旁观者
+
+SPECTATE_APPROVAL_TIMEOUT = 60.0  # 游戏中申请旁观：房主 60 秒未响应自动拒绝（D4）
+
+# 管理员签发的一次性隐身旁观凭证：token -> {roomId, expiresAt}
+ADMIN_SPECTATE_TOKENS: Dict[str, dict] = {}
+
+# 旁观者允许发送的指令（其余写操作用 Event_ActionRejected 统一拒绝）
+SPECTATOR_ALLOWED_CMDS = {
+    "SendChat",
+    "SpectateSetView",
+    "SpectatorLeave",
+    "Reconnect",
+    "VoiceJoin",
+    "VoiceLeave",
+    "VoiceSignal",
+    "VoiceSetMute",
+}
+
+
+def issue_admin_spectate_token(room_id: str) -> str:
+    """签发一次性隐身旁观凭证（仅存内存、120 秒内有效）。"""
+    token = uuid.uuid4().hex
+    now = time.time()
+    for key in [k for k, v in ADMIN_SPECTATE_TOKENS.items() if v["expiresAt"] < now]:
+        ADMIN_SPECTATE_TOKENS.pop(key, None)
+    ADMIN_SPECTATE_TOKENS[token] = {"roomId": room_id, "expiresAt": now + 120}
+    return token
+
+
+def consume_admin_spectate_token(token: str, room_id: str) -> bool:
+    """核销凭证：一次性使用，用后立即失效。"""
+    info = ADMIN_SPECTATE_TOKENS.pop((token or "").strip(), None)
+    if not info:
+        return False
+    return info["roomId"] == room_id and info["expiresAt"] >= time.time()
+
+
+def unique_spectator_id(room: GameRoom, player_name: str) -> str:
+    """旁观者 id：与参赛者/已有旁观者重名时加后缀，绝不复用参赛者 id。"""
+    base = f"{room.roomId}_{player_name}"
+    spectator_id = base
+    seq = 1
+    while spectator_id in room.players or spectator_id in room.spectators:
+        seq += 1
+        spectator_id = f"{base}_s{seq}"
+    return spectator_id
+
+
+async def register_spectator(
+    websocket: WebSocket,
+    room: GameRoom,
+    player_name: str,
+    ip: str,
+    client_id: str,
+    admin_token: str,
+) -> Optional[str]:
+    """旁观者接入全流程；成功返回 spectator_id，被拒/超时返回 None（连接已关闭）。"""
+    hidden = bool(admin_token) and consume_admin_spectate_token(admin_token, room.roomId)
+    display_name = f"{player_name}（管理员）" if hidden else player_name
+
+    if not hidden:
+        hit_word = app_config.check_banned_text(player_name)
+        if hit_word:
+            app_config.record_word_hit(hit_word)
+            term_registry.log_event(
+                f"拒绝含违禁词的旁观昵称（{ip}，命中「{hit_word}」）", "warn"
+            )
+            await websocket.send_json({"error": f"昵称包含违禁内容：{hit_word}"})
+            await websocket.close(code=1008, reason="banned_nickname")
+            return None
+
+    spectator_id = unique_spectator_id(room, display_name)
+    allow_chat = True
+    allow_voice = True
+
+    # 组队期（WAITING）与已结束（GAME_OVER）直接进；只有牌局进行中需要房主批准（D3）
+    if room.gamePhase == "PLAYING" and not hidden:
+        pending = {
+            "playerName": display_name,
+            "event": asyncio.Event(),
+            "decision": None,
+            "allowChat": True,
+            "allowVoice": True,
+        }
+        room.spectatorPending[spectator_id] = pending
+        await websocket.send_json(
+            {
+                "event": "Event_SpectatorWaiting",
+                "payload": {"text": "正在等待房主批准旁观…"},
+            }
+        )
+        await room.send_to_player(
+            room.hostId,
+            "Event_SpectatorAsk",
+            {"playerId": spectator_id, "playerName": display_name},
+        )
+        term_registry.log_event(
+            f"旁观申请待批准（{display_name}，房间 {room.roomId}）", "info"
+        )
+        approved = False
+        client_gone = False
+        deadline = time.time() + SPECTATE_APPROVAL_TIMEOUT
+        try:
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(
+                        pending["event"].wait(), timeout=min(0.5, remaining)
+                    )
+                except asyncio.TimeoutError:
+                    # 轮询式等待：客户端中途关掉页面时立刻撤销申请，
+                    # 避免房主看到一个永远点不掉的幽灵弹窗
+                    if websocket.client_state != WebSocketState.CONNECTED:
+                        client_gone = True
+                        break
+                    continue
+                approved = bool(pending["decision"])
+                allow_chat = bool(pending["allowChat"])
+                allow_voice = bool(pending["allowVoice"])
+                break
+        finally:
+            room.spectatorPending.pop(spectator_id, None)
+
+        if client_gone:
+            return None
+
+        if not approved:
+            reason = (
+                "房主未响应，旁观请求已超时"
+                if pending["decision"] is None
+                else "房主拒绝了你的旁观申请"
+            )
+            term_registry.log_event(
+                f"旁观被拒绝（{display_name}，房间 {room.roomId}，{reason}）", "warn"
+            )
+            try:
+                await websocket.send_json(
+                    {
+                        "event": "Event_SpectatorRejected",
+                        "payload": {"reason": reason, "text": reason},
+                    }
+                )
+                await websocket.close(code=1008, reason="spectate_rejected")
+            except Exception:
+                pass
+            return None
+
+    spectator = Player(spectator_id, display_name)
+    room.add_spectator(spectator, websocket, hidden=hidden)
+    room.spectatorView[spectator_id] = room.default_spectate_view()
+    if hidden:
+        # 管理员隐身旁观：不发言、不语音，避免暴露
+        room.spectatorMuted.add(spectator_id)
+        room.spectatorVoiceBanned.add(spectator_id)
+    else:
+        if not allow_chat:
+            room.spectatorMuted.add(spectator_id)
+        if not allow_voice:
+            room.spectatorVoiceBanned.add(spectator_id)
+
+    if client_id:
+        term_registry.get_or_create(client_id, ip, websocket.headers.get("user-agent", ""), "spectator")
+        term_registry.attach_socket(client_id, websocket, "room")
+        term_registry.bind_player(client_id, display_name, room.roomId)
+
+    term_registry.log_event(
+        f"管理员隐身旁观房间 {room.roomId}（{ip}）" if hidden else f"{display_name} 进入旁观（房间 {room.roomId}）",
+        "warn" if hidden else "info",
+    )
+
+    await websocket.send_json(
+        {
+            "event": "Event_SpectateReady",
+            "payload": {
+                "playerId": spectator_id,
+                "playerName": display_name,
+                "viewId": room.spectatorView.get(spectator_id),
+                "hidden": hidden,
+                "muted": spectator_id in room.spectatorMuted,
+                "voiceBanned": spectator_id in room.spectatorVoiceBanned,
+            },
+        }
+    )
+    await websocket.send_json({"event": "Event_SyncFullState", "payload": room.get_state()})
+    await room.broadcast_state()
+    if not hidden:
+        await room.broadcast_chat(system_chat(room, f"{display_name} 进入旁观"))
+    return spectator_id
+
+
+async def unregister_spectator(room: GameRoom, spectator_id: str, websocket: WebSocket):
+    """旁观者断线清理；连接已被新连接接管（刷新重连）时不误删。"""
+    if room.spectator_conns.get(spectator_id) is not websocket:
+        return
+    was_hidden = spectator_id in room.spectatorHidden
+    player = room.remove_spectator(spectator_id)
+    if spectator_id in room.voiceParticipants:
+        await cmd_voice_leave(room, spectator_id, notify_chat=not was_hidden)
+    await room.broadcast_state()
+    if player and not was_hidden:
+        await room.broadcast_chat(system_chat(room, f"旁观者 {player.playerName} 离开了房间"))
+
+
+async def cmd_spectate_set_view(room: GameRoom, player_id: str, target: Any):
+    """旁观者切换代入视角（D1）：目标必须是本房参赛者。"""
+    if player_id not in room.spectators:
+        return
+    target_id = str(target or "")
+    if target_id not in room.players:
+        target_id = room.default_spectate_view() or ""
+    room.spectatorView[player_id] = target_id
+    target = room.players.get(target_id)
+    await room.send_to_player(
+        player_id,
+        "Event_SpectateView",
+        {"targetPlayerId": target_id, "targetName": target.playerName if target else ""},
+    )
+    await room.broadcast_state()
+
+
+async def cmd_spectator_respond(
+    room: GameRoom,
+    host_id: str,
+    target_id: Any,
+    allow: Any,
+    allow_chat: Any,
+    allow_voice: Any,
+):
+    """房主审批游戏中旁观申请。"""
+    if host_id != room.hostId:
+        return
+    pending = room.spectatorPending.get(str(target_id or ""))
+    if pending is None:
+        return
+    pending["decision"] = bool(allow)
+    pending["allowChat"] = bool(allow_chat)
+    pending["allowVoice"] = bool(allow_voice)
+    pending["event"].set()
+    term_registry.log_event(
+        f"房主{'批准' if pending['decision'] else '拒绝'}旁观申请"
+        f"（{pending['playerName']}，房间 {room.roomId}）",
+        "info",
+    )
+
+
+async def cmd_kick_spectator(room: GameRoom, host_id: str, target_id: Any):
+    """房主踢出旁观者：先摘连接再 close，避免断线分支拿不到条目。"""
+    if host_id != room.hostId:
+        return
+    spectator_id = str(target_id or "")
+    player = room.spectators.get(spectator_id)
+    if player is None:
+        return
+    ws = room.spectator_conns.pop(spectator_id, None)
+    room.remove_spectator(spectator_id)
+    if spectator_id in room.voiceParticipants:
+        await cmd_voice_leave(room, spectator_id, notify_chat=False)
+    if ws is not None:
+        try:
+            await ws.send_json(
+                {
+                    "event": "Event_SpectatorRejected",
+                    "payload": {"reason": "kicked", "text": "你已被房主移出旁观"},
+                }
+            )
+            await ws.close(code=4001, reason="spectator_kicked")
+        except Exception:
+            pass
+    term_registry.log_event(
+        f"房主移出旁观者 {player.playerName}（房间 {room.roomId}）", "warn"
+    )
+    await room.broadcast_state()
+    await room.broadcast_chat(system_chat(room, f"房主将旁观者 {player.playerName} 移出房间"))
+
+
+async def cmd_mute_spectator(room: GameRoom, host_id: str, target_id: Any, muted: Any):
+    """房主禁言 / 解禁旁观者。"""
+    if host_id != room.hostId:
+        return
+    spectator_id = str(target_id or "")
+    if spectator_id not in room.spectators:
+        return
+    if bool(muted):
+        room.spectatorMuted.add(spectator_id)
+    else:
+        room.spectatorMuted.discard(spectator_id)
+    await room.send_to_player(
+        spectator_id, "Event_SpectatorMuted", {"muted": bool(muted)}
+    )
+    await room.broadcast_state()
 
 
 # ---------------------------------------------------------------- 语音通话
 
 
 async def cmd_voice_join(room: GameRoom, player_id: str):
-    """加入语音通话：新成员拿到既有成员列表并主动发 offer，老成员收到通知。"""
-    player = room.players.get(player_id)
+    """加入语音通话：新成员拿到既有成员列表并主动发 offer，老成员收到通知。
+
+    旁观者同样可以加入（D5）；管理员隐身旁观与「审批时未授予语音」的旁观者除外。
+    """
+    player = room.member_of(player_id)
     if player is None or player.isBot:
+        return
+    if player_id in room.spectatorVoiceBanned:
+        await room.send_to_player(
+            player_id, "Event_VoiceKicked", {"by": "房主（未开放旁观语音）"}
+        )
         return
 
     if player_id in room.voiceParticipants:
@@ -907,7 +1377,7 @@ async def cmd_voice_leave(room: GameRoom, player_id: str, notify_chat: bool = Tr
         return
     room.voiceParticipants.remove(player_id)
     room.voiceHostMuted.discard(player_id)
-    player = room.players.get(player_id)
+    player = room.member_of(player_id)
     name = player.playerName if player else player_id
     for pid in list(room.voiceParticipants):
         await room.send_to_player(
@@ -966,7 +1436,7 @@ async def cmd_voice_kick(room: GameRoom, player_id: str, target_id: Any):
         return
     room.voiceParticipants.remove(target)
     room.voiceHostMuted.discard(target)
-    target_player = room.players.get(target)
+    target_player = room.member_of(target)
     name = target_player.playerName if target_player else target
     host = room.players.get(player_id)
     for pid in list(room.voiceParticipants):
@@ -988,7 +1458,8 @@ async def cmd_voice_close(room: GameRoom, player_id: str):
     by = host.playerName if host else "房主"
     room.voiceParticipants = []
     room.voiceHostMuted.clear()
-    for pid in list(room.ws_connections.keys()):
+    # 参赛者与旁观者都要收到（旁观者可能也加入了语音）
+    for pid in list(room.ws_connections.keys()) + list(room.spectator_conns.keys()):
         await room.send_to_player(pid, "Event_VoiceClosed", {"by": by})
     await room.broadcast_chat(system_chat(room, f"{by} 关闭了语音通话"))
     await room.broadcast_state()
@@ -996,6 +1467,34 @@ async def cmd_voice_close(room: GameRoom, player_id: str):
 
 async def handle_command(room: GameRoom, player_id: str, message: dict):
     cmd = message.get("cmd") or message.get("action")
+
+    # ---------------------------------------------------------- 旁观者分支
+    # 旁观者天然不在 players 里，服务端在这里统一拦截写操作：即使前端把按钮
+    # 显示出来（视角代入时很可能出现「轮到你了」的 UI），也改不了牌局。
+    if player_id not in room.players:
+        if player_id not in room.spectators:
+            return
+        if cmd in SPECTATOR_ALLOWED_CMDS:
+            if cmd == "SendChat":
+                await cmd_send_chat(room, player_id, message.get("text"))
+            elif cmd == "SpectateSetView":
+                await cmd_spectate_set_view(room, player_id, message.get("targetPlayerId"))
+            elif cmd == "SpectatorLeave":
+                await room.send_to_player(player_id, "Event_SpectatorLeft", {})
+                await unregister_spectator(room, player_id, room.spectator_conns.get(player_id))
+            elif cmd == "VoiceJoin":
+                await cmd_voice_join(room, player_id)
+            elif cmd == "VoiceLeave":
+                await cmd_voice_leave(room, player_id)
+            elif cmd == "VoiceSignal":
+                await cmd_voice_signal(room, player_id, message.get("to"), message.get("data"))
+            elif cmd == "VoiceSetMute":
+                await cmd_voice_set_mute(room, player_id, bool(message.get("muted")))
+            return
+        await room.send_to_player(
+            player_id, "Event_ActionRejected", {"reason": "旁观者不可操作"}
+        )
+        return
 
     if cmd == "StartGame":
         await cmd_start_game(room, player_id)
@@ -1011,6 +1510,8 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await cmd_submit_guess(room, player_id, message.get("guesses"))
     elif cmd == "KickPlayer":
         await cmd_kick_player(room, player_id, message.get("playerId"))
+    elif cmd == "LeaveRoom":
+        await cmd_leave_room(room, player_id)
     elif cmd == "AddBot":
         await cmd_add_bot(room, player_id)
     elif cmd == "RemoveBot":
@@ -1029,6 +1530,21 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
     elif cmd == "DissolveRoom":
         if player_id == room.hostId:
             await admin_close_room(room, by="房主")
+    elif cmd == "SetRoomPrivacy":
+        await cmd_set_room_privacy(room, player_id, message.get("private"))
+    elif cmd == "SpectatorRespond":
+        await cmd_spectator_respond(
+            room,
+            player_id,
+            message.get("playerId"),
+            message.get("allow"),
+            message.get("allowChat", True),
+            message.get("allowVoice", True),
+        )
+    elif cmd == "KickSpectator":
+        await cmd_kick_spectator(room, player_id, message.get("playerId"))
+    elif cmd == "MuteSpectator":
+        await cmd_mute_spectator(room, player_id, message.get("playerId"), message.get("muted"))
     elif cmd == "SendChat":
         await cmd_send_chat(room, player_id, message.get("text"))
     elif cmd == "VoiceJoin":
@@ -1045,6 +1561,25 @@ async def handle_command(room: GameRoom, player_id: str, message: dict):
         await cmd_voice_kick(room, player_id, message.get("playerId"))
     elif cmd == "VoiceClose":
         await cmd_voice_close(room, player_id)
+
+
+async def cmd_set_room_privacy(room: GameRoom, player_id: str, private: Any):
+    """房主切换房间隐身：隐身房间不出现在首页公开列表（管理员仍可见）。"""
+    if player_id != room.hostId:
+        return
+    room.isPrivate = bool(private)
+    term_registry.log_event(
+        f"房主将房间 {room.roomId} 设为{'隐身' if room.isPrivate else '公开'}", "info"
+    )
+    await room.broadcast_state()
+    await room.broadcast_chat(
+        system_chat(
+            room,
+            "房主已开启房间隐身，本房不再出现在首页房间列表"
+            if room.isPrivate
+            else "房主已关闭房间隐身，本房重新出现在首页房间列表",
+        )
+    )
 
 
 async def reset_room_state(room: GameRoom):
@@ -1069,12 +1604,16 @@ async def reset_room_state(room: GameRoom):
         p.hand = []
         p.clues = []
         p.isAlive = True
-    # 重置牌局会结束当前语音通话（聊天记录保留）
+    # 重置牌局会结束当前语音通话（聊天记录与旁观者保留）
     if room.voiceParticipants:
         room.voiceParticipants = []
         room.voiceHostMuted.clear()
-        for pid in list(room.ws_connections.keys()):
+        for pid in list(room.ws_connections.keys()) + list(room.spectator_conns.keys()):
             await room.send_to_player(pid, "Event_VoiceClosed", {"by": "牌局重置"})
+    # 旁观者的代入视角若指向已不存在的玩家，回退到默认视角
+    for sid in list(room.spectatorView.keys()):
+        if room.spectatorView.get(sid) not in room.players:
+            room.spectatorView[sid] = room.default_spectate_view()
 
 
 async def admin_reset_room(room: GameRoom):
@@ -1087,14 +1626,22 @@ async def admin_close_room(room: GameRoom, by: str = "管理员"):
     room.stop_bot_driver()
     rooms.pop(room.roomId, None)
     term_registry.log_event(f"{by}关闭房间 {room.roomId}", "warn")
-    for pid, ws in list(room.ws_connections.items()):
+    # 参赛者与旁观者一并通知并断开
+    for pid, ws in list(room.ws_connections.items()) + list(room.spectator_conns.items()):
         try:
             await ws.send_json({"event": "Event_RoomClosed", "payload": {}})
         except Exception:
             pass
-    for pid in list(room.ws_connections.keys()):
-        await room.send_to_player(pid, "Event_AdminNotice", {"text": "房间已被管理员关闭"})
+    for pid in list(room.ws_connections.keys()) + list(room.spectator_conns.keys()):
+        await room.send_to_player(pid, "Event_AdminNotice", {"text": "房间已关闭"})
     room.ws_connections.clear()
+    room.spectator_conns.clear()
+    room.spectators.clear()
+    room.spectatorView.clear()
+    room.spectatorMuted.clear()
+    room.spectatorVoiceBanned.clear()
+    room.spectatorHidden.clear()
+    room.spectatorPending.clear()
 
 
 async def admin_kick_player(room: GameRoom, player_id: Optional[str]):
@@ -1123,12 +1670,36 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 DIST_PATH = os.path.join(PROJECT_ROOT, "dist")
 
+# 无人在线多久后回收房间（关标签页而不是点退出留下的空壳）
+IDLE_ROOM_SECONDS = 300.0
+_empty_since: Dict[str, float] = {}
+
+
+async def _idle_room_reaper():
+    """定时回收「一个人都不在线」超过 5 分钟的房间。
+
+    否则房间会永远留在 rooms 里：首页房间列表能看到一个进不去的幽灵房，
+    管理后台也一直挂着它。
+    """
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        for rid, room in list(rooms.items()):
+            if room.ws_connections or room.spectator_conns:
+                _empty_since.pop(rid, None)
+                continue
+            since = _empty_since.setdefault(rid, now)
+            if now - since >= IDLE_ROOM_SECONDS:
+                _empty_since.pop(rid, None)
+                await admin_close_room(room, by="系统空闲回收")
+
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
 
 @app.on_event("startup")
 async def startup_event():
+    asyncio.create_task(_idle_room_reaper())
     print(f"📁 前端静态文件路径：{DIST_PATH}")
     print(f"📁 路径存在：{os.path.exists(DIST_PATH)}")
     if os.path.exists(DIST_PATH):
@@ -1167,12 +1738,36 @@ async def get_version():
 
 @app.get("/api/rooms")
 async def list_rooms():
-    return {
-        "rooms": [
-            {"roomId": rid, "playerCount": len(room.players), "gamePhase": room.gamePhase}
-            for rid, room in rooms.items()
-        ]
-    }
+    """首页公开房间列表。
+
+    管理员可整体关闭该功能：关闭后直接返回空列表，首页连面板占位都不渲染。
+    开启时只返回「等人中 / 进行中」且未被房主设为隐身的房间：已结束的房间加入
+    无意义，隐身房间是房主的主动选择。管理后台展示的是 /ws/admin 快照，不受此处
+    过滤影响。
+    """
+    if not app_config.room_list_enabled():
+        return {"enabled": False, "rooms": [], "serverTime": time.time()}
+    visible_phases = ("WAITING", "PLAYING")
+    items = []
+    for rid, room in rooms.items():
+        if room.isPrivate or room.gamePhase not in visible_phases:
+            continue
+        host = room.players.get(room.hostId)
+        items.append(
+            {
+                "roomId": rid,
+                "playerCount": len(room.players),
+                "maxPlayers": 4,
+                "gamePhase": room.gamePhase,
+                "hostName": host.playerName if host else None,
+                "spectatorCount": len(getattr(room, "spectators", {}) or {}),
+                "createdAt": room.createdAt,
+                "chatDisabled": bool(getattr(room, "chatDisabled", False)),
+            }
+        )
+    # 等人中的房间排前面；同级按创建时间正序（先开的房间先展示）
+    items.sort(key=lambda r: (0 if r["gamePhase"] == "WAITING" else 1, r["createdAt"]))
+    return {"enabled": True, "rooms": items, "serverTime": time.time()}
 
 
 @app.get("/api/admin/access")
@@ -1295,6 +1890,26 @@ async def admin_endpoint(websocket: WebSocket):
     try:
         while True:
             message = await websocket.receive_json()
+            # 隐身旁观：签发一次性凭证并直接回给该管理端（execute_command 只能返回 bool，
+            # 拿不到 token，所以在这里单独处理）
+            if message.get("cmd") == "AdminSpectate":
+                target = rooms.get(str(message.get("roomId") or ""))
+                if target is None:
+                    await websocket.send_json(
+                        {"event": "Event_AdminNotice", "payload": {"text": "房间已不存在，无法旁观"}}
+                    )
+                    continue
+                token = issue_admin_spectate_token(target.roomId)
+                term_registry.log_event(
+                    f"管理员签发隐身旁观凭证（房间 {target.roomId}）", "warn"
+                )
+                await websocket.send_json(
+                    {
+                        "event": "Event_AdminSpectateToken",
+                        "payload": {"roomId": target.roomId, "token": token},
+                    }
+                )
+                continue
             changed = await admin_module.execute_command(rooms, message)
             if changed:
                 await websocket.send_json(
@@ -1399,6 +2014,40 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
 
     player_id = f"{room_id}_{player_name}"
     room = rooms.get(room_id)
+
+    # ------------------------------------------------------------ 旁观者接入
+    # spectate=1 走旁观流程（不占用 players 名额）；adminToken 为管理员一次性凭证
+    spectate = (websocket.query_params.get("spectate") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    admin_token = (websocket.query_params.get("adminToken") or "").strip()
+    if spectate:
+        if room is None:
+            await websocket.send_json({"error": "房间不存在，无法旁观"})
+            await websocket.close(code=1008, reason="room_not_found")
+            return
+        spectator_id = await register_spectator(
+            websocket, room, player_name, ip, client_id, admin_token
+        )
+        if spectator_id is None:
+            return
+        try:
+            while True:
+                data = await websocket.receive_json()
+                if client_id:
+                    term_registry.touch(client_id)
+                await handle_command(room, spectator_id, data)
+        except WebSocketDisconnect:
+            print(f"旁观者 {player_name} 断开连接")
+            if client_id:
+                term_registry.detach_socket(client_id, websocket)
+                term_registry.clear_room_binding(client_id, room_id)
+            await unregister_spectator(room, spectator_id, websocket)
+        return
+
     is_new_room = room is None
     if room is None:
         room = GameRoom(room_id, player_id)
@@ -1443,12 +2092,18 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
     else:
         await room.broadcast_chat(system_chat(room, f"{player_name} 重新连接了房间"))
 
+    left_room = False
     try:
         while True:
             data = await websocket.receive_json()
             if client_id:
                 term_registry.touch(client_id)
             await handle_command(room, player_id, data)
+            # 主动退出 / 房主解散之后，服务端已经把人（或整个房间）清掉了，
+            # 这里收尾关连接，不再走下面那套「断线保留占位」的逻辑
+            if player_id not in room.players:
+                left_room = True
+                break
     except WebSocketDisconnect:
         print(f"玩家 {player_name} 断开连接")
         if player_id in room.players:
@@ -1469,7 +2124,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
             paused = True
 
         await room.broadcast_state()
-        await room.broadcast_chat(system_chat(room, f"{player_name} 离开了房间"))
+        await room.broadcast_chat(system_chat(room, f"{player_name} 断线了，等待重连"))
+
+        # 等人阶段：宽限期过了还没回来就把占位清掉（点「退出」走 LeaveRoom，不受此限）
+        if room.gamePhase == "WAITING" and player_id in room.players:
+            asyncio.create_task(remove_offline_after_grace(room, player_id))
 
         for pid in list(room.ws_connections.keys()):
             await room.send_to_player(
@@ -1481,6 +2140,15 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
                     "paused": paused,
                 },
             )
+
+    if left_room:
+        if client_id:
+            term_registry.detach_socket(client_id, websocket)
+            term_registry.clear_room_binding(client_id, room_id)
+        try:
+            await websocket.close(code=1000, reason="left")
+        except Exception:
+            pass
 
 
 def _tls_kwargs() -> dict:

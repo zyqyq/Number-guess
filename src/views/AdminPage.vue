@@ -95,6 +95,8 @@
             :events="snapshot.events"
             :rooms="snapshot.rooms"
             :server-time="snapshot.serverTime"
+            :room-list-enabled="snapshot.roomList?.enabled"
+            @set-room-list-enabled="(enabled: boolean) => send({ cmd: 'AdminSetRoomListEnabled', enabled })"
           />
         </template>
       </main>
@@ -195,6 +197,8 @@ const connectAdminSocket = () => {
       denied.value = true;
       deniedReason.value = data.payload?.reason || '管理口令校验失败';
       disposeSocket();
+    } else if (data.event === 'Event_AdminSpectateToken') {
+      openSpectateWindow(data.payload || {});
     }
   };
 
@@ -245,7 +249,39 @@ const handleKick = (payload: { clientId: string; nickname: string }) => {
   showNotice(`已发送断开指令：${payload.nickname || payload.clientId.slice(0, 8)}`);
 };
 
+// 隐身旁观：先同步开一个空白标签（用户手势内，避免被弹窗拦截），拿到凭证后再跳转
+let spectateWindow: Window | null = null;
+
+const openSpectateWindow = (payload: { roomId?: string; token?: string }) => {
+  if (!payload.roomId || !payload.token) {
+    showNotice('签发隐身旁观凭证失败');
+    return;
+  }
+  const url =
+    `${window.location.origin}/game?roomId=${encodeURIComponent(payload.roomId)}` +
+    `&playerName=${encodeURIComponent('管理员')}&spectate=1&adminToken=${encodeURIComponent(payload.token)}`;
+  if (spectateWindow && !spectateWindow.closed) {
+    spectateWindow.location.href = url;
+    spectateWindow = null;
+    showNotice('已在新标签打开隐身旁观窗口（其他玩家看不到你）');
+    return;
+  }
+  const opened = window.open(url, '_blank');
+  if (!opened) {
+    showNotice('新标签被浏览器拦截，请允许弹窗后重试');
+  } else {
+    showNotice('已在新标签打开隐身旁观窗口（其他玩家看不到你）');
+  }
+};
+
 const handleRoomAction = (payload: { cmd: string; roomId: string; playerId?: string }) => {
+  if (payload.cmd === 'AdminSpectate') {
+    // 必须在点击的同步阶段先占一个标签，异步回调里的 window.open 会被浏览器拦掉
+    spectateWindow = window.open('about:blank', '_blank');
+    send({ cmd: 'AdminSpectate', roomId: payload.roomId });
+    showNotice('正在签发隐身旁观凭证…');
+    return;
+  }
   send(payload);
   const labels: Record<string, string> = {
     AdminResetRoom: `已重置房间 ${payload.roomId}`,

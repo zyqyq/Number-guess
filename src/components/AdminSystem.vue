@@ -75,6 +75,24 @@
       </div>
     </div>
 
+    <div class="panel">
+      <h3 class="panel-title">首页房间列表</h3>
+      <p class="panel-note">关闭后首页完全不展示房间列表（连占位都没有），玩家只能靠房间号或分享链接进入。保存在 config.json 的 roomList.enabled。</p>
+      <div class="mode-switch">
+        <button
+          class="mode-btn"
+          :class="{ active: roomListEnabled !== false }"
+          @click="emit('set-room-list-enabled', true)"
+        >开启</button>
+        <button
+          class="mode-btn"
+          :class="{ active: roomListEnabled === false }"
+          @click="emit('set-room-list-enabled', false)"
+        >关闭</button>
+      </div>
+      <p class="panel-note">当前：{{ roomListEnabled === false ? '已关闭，首页不显示房间列表' : '已开启，首页右侧显示紧凑房间列表' }}</p>
+    </div>
+
     <div class="panel events">
       <h3 class="panel-title">最近事件 <span class="panel-note">服务端环形缓冲，最多 120 条</span></h3>
       <ul v-if="events.length" class="event-list">
@@ -99,7 +117,11 @@ const props = defineProps<{
   events: AdminEvent[];
   rooms: AdminRoom[];
   serverTime?: number;
+  // 首页房间列表是否开启（关闭后首页完全看不到该面板）
+  roomListEnabled?: boolean;
 }>();
+
+const emit = defineEmits<{ (e: 'set-room-list-enabled', enabled: boolean): void }>();
 
 const loadText = computed(() => {
   const s = props.system;
@@ -139,6 +161,37 @@ const cpuClass = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.mode-switch {
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 4px;
+  background: #f1f3f8;
+  border-radius: 10px;
+}
+
+.mode-btn {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #5b6478;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-btn:hover {
+  color: #334155;
+}
+
+.mode-btn.active {
+  background: #fff;
+  color: #4a4fa2;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
 }
 
 .section-head {

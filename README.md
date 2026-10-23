@@ -93,8 +93,8 @@
 - **IP 黑名单**：`config.json` 的 `security.ipBlacklist`，支持单个 IP 与 CIDR 网段（如 `10.0.0.0/8`）。命中黑名单的来源，游戏连接、presence 登记、管理接口与管理 WebSocket 全部拒绝（关闭码 `1008 / ip_banned`），优先级高于仅本机开关；命中次数会记入配置并展示在「安全设置」页。
 - **违禁词库**：`config.json` 的 `security.bannedWords`。昵称在 WebSocket 握手时校验，命中即拒绝（`1008 / banned_nickname`）并在事件流记录命中词；首页输入昵称时会按 `/api/banned-words` 做本地预检提示（只作体验优化，真正拦截在后端）。文字聊天使用同一套词库（见 2.7）。
 - **连入终端**：一行一台终端，显示昵称、IP、类型（玩家 / 访客 / 管理端）、房间号、连入时间（东八区）、在线时长，支持按状态筛选与关键字搜索。「强制断开」会让对方收到 `4001` 关闭码并回到首页；管理端自身连接不可被断开。
-- **房间管理**：以卡片展示每个房间的状态、轮次、时长、存活人数、阶段与成员（房主 / 机器人 / 离线 / 当前回合标记）。可执行「重置牌局」（回到等待阶段，玩家自动退回大厅）、「关闭房间」（断开房内所有连接）、「移出玩家」（对方收到 `4001` 关闭码并回到首页）。
-- **系统管理**：进程运行时长、在线终端数、房间数、峰值内存、Python / FastAPI 版本、1/5/15 分钟负载、磁盘占用进度条，以及最近 120 条服务端事件（连接、建房、管理员操作等）。
+- **房间管理**：以卡片展示每个房间的状态、轮次、时长、存活人数、阶段与成员（房主 / 机器人 / 离线 / 当前回合标记）；房主设了隐身的房间带「🔒 隐身」徽标（隐身只影响首页公开列表，管理员始终可见）。可执行「重置牌局」（回到等待阶段，玩家自动退回大厅）、「关闭房间」（断开房内所有连接）、「移出玩家」（对方收到 `4001` 关闭码并回到首页）。
+- **系统管理**：进程运行时长、在线终端数、房间数、峰值内存、Python / FastAPI 版本、1/5/15 分钟负载、磁盘占用进度条，以及最近 120 条服务端事件（连接、建房、管理员操作等）。页内可开关**首页房间列表**（开启 / 关闭，写入 `config.json` 的 `roomList.enabled`）。
 - 数据每 2 秒由管理端 WebSocket 全量推送一次；面板上的时间统一按东八区渲染。安全设置子页可在线维护黑名单与违禁词，改动即时写回 `config.json` 并热生效。
 
 ### 2.7 聊天室（文字 + 语音）
@@ -102,10 +102,34 @@
 - **位置**：游戏页右侧栏与等待大厅右侧各有一个聊天室面板（`ChatPanel.vue`），分「💬 聊天」「🎙️ 语音」两个页签。进入房间即可聊天，不必等牌局开始；大厅与游戏页之间跳转时聊天记录与语音通话均不中断（语音引擎为跨页面单例）。
 - **文字聊天**：消息经房间 WebSocket 的 `SendChat` 指令广播（`Event_Chat`），服务端保留最近 100 条历史，晚加入者通过状态快照补齐最近 50 条。加入 / 离开 / 重连、机器人进出、语音动态都会发系统消息。单条最长 300 字符，同一玩家 1 秒内限一条；内容命中违禁词会被拒绝并提示命中词（与昵称同一套词库，归一化匹配可挡拆写）。
 - **消息排布**：微信 / QQ 式对齐——自己的发言靠右（蓝色气泡），其他人的发言靠左（灰色气泡）；昵称与时间在气泡外上方、不上底色，气泡朝发送侧收角；系统消息居中灰色小字。
+- **卡片尺寸固定**：聊天卡片的高度由外层容器给定（大厅为 `min(720px, 100vh - 80px)`，游戏页宽屏为 `100vh - 96px`、窄屏 520px），页签与输入框固定不动，消息只在中部的 `.msg-list` 里上下滚动，消息再多也不会把卡片或整页顶长。
 - **语音通话**：WebRTC Mesh（≤4 人点对点直连），媒体流不经过服务器。信令走房间 WebSocket：`VoiceJoin` 后新成员从 `Event_VoicePeers` 拿到既有成员并主动发 offer，老成员收 `Event_VoicePeerJoined` 等待 offer；`VoiceSignal` 点对点转发 offer / answer / ICE。成员表与禁麦标记随游戏快照下发（`voice` 字段）。
 - **通话内功能**：自主静音（`VoiceSetMute`，他人可见静音徽标）、麦克风 / 输出设备选择、总音量调节、说话中的成员高亮（WebAudio 能量检测）。房主可「全体禁麦 / 解除禁麦」（`VoiceMuteAll`，服务端强制禁用对方麦克风轨道）、「移出成员」（`VoiceKick`）、「关闭通话」（`VoiceClose`，全员退出）。
 - **生命周期**：断线自动退出通话并通知他人；重置牌局会结束当前通话；解散房间随连接一同清理。机器人不参与语音。
 - **安全上下文**：语音需要浏览器 `getUserMedia`，仅在 HTTPS 或 localhost 下可用（见 3.4 自签证书）。以 HTTP 打开时语音页签会提示改用 HTTPS 地址，文字聊天不受影响。
+
+### 2.8 房间发现与分享（首页列表 / 隐身 / 分享链接）
+
+- **首页房间列表**：入口页右侧（窄屏移到卡片下方）列出所有「等人中 / 进行中」的公开房间，统一为紧凑列表（一行一间：房间号 + 状态标签 + 房主 + 人数），每 4 秒轮询 `/api/rooms`，也可点右上角 ↻ 立即刷新。
+- **总开关**：管理员可在「系统管理 → 首页房间列表」选择**开启 / 关闭**。关闭后 `/api/rooms` 直接返回空列表，首页连面板占位都不渲染（与没有该功能时完全一致），玩家只能靠房间号或分享链接进入。配置项为 `config.json` 的 `roomList.enabled`。
+- **点击加入**：填好昵称后点卡片即直接加入；未填昵称时会先把房间号填进输入框并提示补昵称。已开局或已满员的房间会自动改为**以旁观者身份进入**（见 2.9），并提示进入的是旁观模式。
+- **旁观加入**：「🚪 加入房间」右侧有一个小箭头按钮，点开纵向展开「👁 旁观加入」（再点箭头或点页面空白处收起）。它用输入框里的房间号直接以旁观者身份进入，适合从聊天里拿到房间号、只想看不想打的场景。首页房间列表每行右侧的 👁 也是同一个入口。
+- **房主隐身**：大厅房主操作区与「🤖 添加机器人」并排（同一行各占一半宽度）有「🔒 房间隐身 / 🔓 解除房间隐身」按钮，说明文字「不在首页房间列表显示」只在鼠标悬停或键盘聚焦时浮出（指令 `SetRoomPrivacy`）。开启后该房从首页公开列表消失，但凭房间号或分享链接仍可加入；房内会广播一条系统消息，管理后台仍能看到该房并带隐身徽标。
+- **分享链接**：大厅房间号旁与游戏页顶栏各有一个 🔗 按钮，复制 `https://<主机>/?roomId=<房间号>`。对方打开后房间号自动预填并置为只读，附带「已从分享链接带入房间 XXXX」提示，点 ✕ 可清空改填其他房间号。同时兼容更短的 `?room=<房间号>` 写法。
+- **隐私边界**：`/api/rooms` 只返回公开房间的基本信息（房间号、房主昵称、人数、阶段、创建时间），不泄露玩家列表、手牌或聊天内容。
+
+### 2.9 旁观者模式（视角代入）
+
+- **怎么进**：① 首页房间列表每行右侧的 👁 按钮；② 已开局 / 已满员的房间直接点整行（D2 自动转旁观）；③ 手动填房间号加入时若房间已满，会提示「房间已满员，将以旁观者身份进入」并自动跳转；④ 首页「加入房间」右侧小箭头展开的「👁 旁观加入」。旁观者不占 4 个参赛名额。
+- **未开局时先看等待界面**：房间还在 `WAITING` 时，旁观者不会被丢进空荡荡的牌桌，而是落在大厅的等待界面——能看到 4 个座位、房主操作结果和聊天室，顶部有「👁 旁观中」徽标与旁观提示条，但没有任何房主按钮（开始游戏 / 添加机器人 / 解散房间都不渲染），底部是「退出旁观」。房主一开局，旁观者会自动切到观战界面（路由复用同一条连接，身份由 Pinia 的 `spectatorId` 跨页携带）。已开局（`PLAYING`）的房间仍然直接进观战界面。
+- **是否需要批准**：组队期（`WAITING`）与已结束（`GAME_OVER`）直接进；牌局进行中（`PLAYING`）需要房主批准——房主屏幕中央弹窗「XX 请求旁观」，可勾选「允许参与聊天 / 允许加入语音」，60 秒无响应自动拒绝（D4）。房主在大厅或游戏页都能看到该弹窗。
+- **视角代入（D1）**：旁观者不是「信息被裁剪的第三方」，而是**代入某位参赛者的座位**——默认替第一位玩家，顶栏有「切换视角」按钮组可随时换成任何人。代入后手牌区变成与真身一致的待填写空牌、其他玩家仍为明牌、线索与回合提示完全一致，因为前端只是把 `myPlayerId` 指向被代入者。
+- **只读约束**：服务端以「`player_id` 不在 `room.players` 中」为唯一判据，所有写指令（开始/抽牌/选牌/判定/提交猜测/重置/踢人/隐身）一律回 `Event_ActionRejected{reason:"旁观者不可操作"}`；前端另把整个操作区 `pointer-events: none` 并灰化，避免误以为能操作。
+- **显著标识**：顶栏「👁 旁观中」徽标 + 通栏渐变提示条（含视角切换器）+ 操作区的「旁观中，不可操作牌局」提示块，不做灰度滤镜（会看不清牌面）。
+- **聊天与语音**：旁观者可以发言（气泡带「旁观」徽标），被房主禁言后 `SendChat` 回 `Event_ChatRejected`；也可以加入语音（D5），审批时未授予语音的旁观者会被服务端拒绝（`Event_VoiceKicked`）。
+- **房主管控**：大厅「旁观者」分区列出全部旁观者，房主可就地「禁言 / 解除禁言」「踢出」（`MuteSpectator` / `KickSpectator`，踢出时以 4001 断开）。这些操作不进入牌局逻辑。
+- **管理员隐身旁观**：管理后台房间卡片新增「隐身旁观」按钮，点后签发**一次性、120 秒有效**的 `adminToken` 并在新标签打开旁观窗口。隐身旁观对其他玩家完全不可见（不出现于 `state.spectators`）、默认禁言禁语音，只有管理快照能看到并标记 `hidden`。
+- **生命周期**：旁观者主动「退出旁观」（`SpectatorLeave`）或断线都会从列表移除并广播系统消息（隐身者除外）；牌局重置保留旁观者与聊天记录，仅纠正失效的代入视角；房间解散时旁观者与参赛者一起收到 `Event_RoomClosed` 并断开。
 
 ## 3. 程序配置与启动
 
@@ -205,7 +229,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 ### 4.2 前端结构
 
-- `views/`：入口页、等待大厅、游戏房间和管理后台。
+- `views/`：入口页（含公开房间列表与分享落地）、等待大厅、游戏房间和管理后台。
 - `components/`：公共牌、玩家手牌、候选表格等界面组件；管理后台的四个子页为 `AdminTerminals.vue`（连入终端）、`AdminRooms.vue`（房间管理）、`AdminSystem.vue`（系统管理）、`AdminSecurity.vue`（安全设置）；`ChatPanel.vue` 为右侧栏聊天室（文字 + 语音两个页签）。
 - `stores/game.ts`：保存服务端推送的游戏快照和当前玩家身份。
 - `services/websocket.ts`：建立 WebSocket、发送指令、接收状态事件，并处理被管理员断开（`4001`）后的提示与退出；聊天与语音事件在此分发给对应回调。
@@ -225,7 +249,9 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 进行中包含 `DRAW_PHASE`、`ACTION_PHASE`、`JUDGE_RESULT` 和断线时的 `PAUSED`。每次抽牌、判定、回合切换或猜测后，服务端通过 `Event_StateUpdate` 广播游戏快照；新连接通过 `Event_SyncFullState` 同步当前状态。快照除游戏数据外还携带 `chat`（最近 50 条聊天历史）与 `voice`（语音成员表、禁麦标记）。
 
-主要客户端指令包括：`StartGame`、`SelectColorToDraw`、`SelectPublicCard`、`DeselectPublicCard`、`JudgeByPosition`、`JudgeByPoint`、`SubmitGuess`、`SkipTurn`、`AddBot`、`RemoveBot`、`ResetGame`、`KickPlayer` 和 `DissolveRoom`。
+主要客户端指令包括：`StartGame`、`SelectColorToDraw`、`SelectPublicCard`、`DeselectPublicCard`、`JudgeByPosition`、`JudgeByPoint`、`SubmitGuess`、`SkipTurn`、`AddBot`、`RemoveBot`、`ResetGame`、`KickPlayer`、`DissolveRoom`、`LeaveRoom` 和 `SetRoomPrivacy`（房主切换首页可见性，快照带 `isPrivate`）。
+
+房间列表由 `GET /api/rooms` 提供：只返回 `gamePhase` 为 `WAITING` / `PLAYING` 且未被房主隐身的房间，附 `mode` 字段告知前端用哪种排布渲染；管理后台走 `/ws/admin` 快照，不受此过滤影响。
 
 聊天室与语音指令（同一条房间连接上发送）：`SendChat`；`VoiceJoin`、`VoiceLeave`、`VoiceSignal`（`to` + SDP / ICE）、`VoiceSetMute`、`VoiceMuteAll`、`VoiceKick`、`VoiceClose`。对应事件：`Event_Chat`、`Event_ChatRejected`、`Event_VoicePeers`、`Event_VoicePeerJoined`、`Event_VoicePeerLeft`、`Event_VoiceSignal`、`Event_VoiceMuteState`、`Event_VoiceHostMuted`、`Event_VoiceKicked`、`Event_VoiceClosed`。
 
@@ -236,11 +262,16 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 | `/ws/presence/{clientId}` | 欢迎页在线登记，填充管理后台的终端列表 | IP 黑名单命中即拒 |
 | `/ws/admin?clientId=…` | 管理后台：首帧 `AdminAuth` 校验口令，之后每 2 秒推送 `Event_AdminSnapshot` | `localOnly` 开关 + IP 黑名单 + 口令 |
 
-管理指令（同一条管理连接上发送）：`AdminKickTerminal`、`AdminResetRoom`、`AdminCloseRoom`、`AdminKickPlayer`、`AdminReloadConfig`、`AdminAddIp` / `AdminRemoveIp`、`AdminAddWord` / `AdminRemoveWord`。
+管理指令（同一条管理连接上发送）：`AdminKickTerminal`、`AdminResetRoom`、`AdminCloseRoom`、`AdminKickPlayer`、`AdminSetRoomListEnabled`（`enabled` 布尔）、`AdminReloadConfig`、`AdminAddIp` / `AdminRemoveIp`、`AdminAddWord` / `AdminRemoveWord`。
 
 ### 4.4 断线处理
 
-玩家断线后仍保留在房间状态中，并标记为离线。若断线者正处于当前回合，房间进入 `PAUSED`；重连后恢复状态。当前后端通过房间号和玩家身份复用房间连接，重连令牌协议属于后续增强项。
+`LeaveRoom`（点「退出房间 / 退出旁观」）与「断线」是两件事：
+
+- **主动退出**：`LeaveRoom` 立刻把人从 `players` 里摘掉（语音一并退出、`turnOrder` 同步剔除、旁观者对该人的代入视角回退），其他人界面上的占位当场消失，连接以 1000 正常关闭。房主退出时把房主交给下一位真人并广播；房里没有其他真人时直接关房（`admin_close_room`）。
+- **断线**：仍保留在房间状态中并标记 `isOnline=false`，便于刷新/换网络后重连恢复；若断线者正处于当前回合，房间进入 `PAUSED`。等人阶段额外有 45 秒宽限期（`DISCONNECT_GRACE_SECONDS`）：宽限期内没回来就按退出处理，避免一个关掉的标签页长期占着座位。
+- **解散房间**：房主「解散房间」发 `DissolveRoom`，服务端从 `rooms` 中移除该房并广播 `Event_RoomClosed`。首页列表与管理员快照因此同步消失；用同一个房间号重开时是全新的 `GameRoom`，聊天记录不会继承上一局。
+- **空闲回收**：`_idle_room_reaper` 每 30 秒扫一遍，房间连续 5 分钟无任何连接（参赛者与旁观者都没有）就自动关闭，防止关标签页留下的空壳长期挂在列表里。
 
 ## 5. 目录结构
 
@@ -280,4 +311,5 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 - 管理后台的来源限制（`localOnly` 与 IP 黑名单）基于对端 TCP 地址判断。若在前面加了反向代理（Nginx / Caddy），所有请求的来源都会变成代理自身（多半是 127.0.0.1），限制随之失效；此时应改为在代理层按 `X-Forwarded-For` 或内网 ACL 再做一层过滤，黑名单同理。
 - 管理口令与「仅本机」开关在 `config.json` 中配置（环境变量可覆盖），仅作本机误入防护，不是强认证；如需更强鉴权应引入独立密钥与正式证书。
 - 违禁词采用「归一化子串匹配」（忽略大小写、空白与零宽字符），可以挡掉常见变体，但挡不住同音字、图片等变形手段；词库通过 `/api/banned-words` 公开只读（仅供首页预检），请勿放入敏感词。
+- 首页房间列表靠 4 秒轮询 `/api/rooms` 刷新（页面隐藏时暂停），不是服务端推送；房间增减最多有 4 秒延迟，点 ↻ 可立即刷新。隐身房间只是不出现在列表里，知道房间号或拿到分享链接的人仍能加入，不能当作访问控制手段。
 - `backend/websocket_server.py` 保留了一份早期实现，当前启动脚本使用的是 `backend/main.py`。

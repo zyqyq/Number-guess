@@ -1,15 +1,49 @@
 <template>
-  <div class="game-room">
+  <div class="game-room" :class="{ 'is-spectator': isSpectator }">
     <!-- 顶部信息栏 -->
     <header class="game-header">
       <h1>猜数字游戏</h1>
       <div class="room-info">
         <span>房间号：{{ roomId }}</span>
+        <span v-if="isSpectator" class="spectator-chip" title="你正在旁观，不会影响牌局">👁 旁观中</span>
+        <span v-if="gameState?.isPrivate" class="private-chip" title="隐身房间不出现在首页房间列表">🔒 隐身</span>
         <span>轮次：{{ gameState?.roundNumber || 0 }}</span>
+        <button class="share-btn" type="button" title="复制分享链接" @click="copyShareLink">🔗 分享</button>
         <button v-if="isHost && (normalizedGamePhase === 'PLAYING' || normalizedGamePhase === 'GAME_OVER')" class="reset-btn" @click="handleResetGame">🔄 重置</button>
-        <button class="exit-btn" @click="exitRoom">🚪 退出</button>
+        <button class="exit-btn" @click="exitRoom">🚪 {{ isSpectator ? '退出旁观' : '退出' }}</button>
       </div>
     </header>
+
+    <!-- 旁观模式通栏提示 + 视角切换器 -->
+    <div v-if="isSpectator" class="spectator-banner">
+      <span class="sb-icon">👁</span>
+      <span class="sb-text">
+        旁观模式 · 正代入 <b>{{ spectateViewName || '（等待）' }}</b> 的视角：手牌与线索与 TA 完全一致，所有操作按钮已禁用
+      </span>
+      <span v-if="spectateOptions.length" class="sb-views">
+        <span class="sb-views-label">切换视角</span>
+        <button
+          v-for="opt in spectateOptions"
+          :key="opt.playerId"
+          type="button"
+          class="sb-view-btn"
+          :class="{ active: opt.playerId === spectateViewId }"
+          @click="setSpectateView(opt.playerId)"
+        >
+          {{ opt.playerName }}
+        </button>
+      </span>
+    </div>
+
+    <!-- 旁观者操作提示（只读拦截 / 禁言 / 视角切换等） -->
+    <transition name="share-fade">
+      <div v-if="spectatorNotice" class="spectator-notice">{{ spectatorNotice }}</div>
+    </transition>
+
+    <!-- 分享链接复制结果提示 -->
+    <transition name="share-fade">
+      <div v-if="shareTip" class="share-toast">{{ shareTip }}</div>
+    </transition>
 
     <!-- 主游戏区：中间保持原有布局与宽度，左右两侧空白区各挂一栏 -->
     <main class="game-layout">
@@ -244,6 +278,13 @@
             </button>
           </div>
 
+          <!-- 旁观者：盖住整个操作区（pointer-events 全挡，服务端另有兜底拦截） -->
+          <div v-if="isSpectator" class="spectator-lock">
+            <span class="sl-icon">👁</span>
+            <span class="sl-text">旁观中，不可操作牌局</span>
+            <span class="sl-sub">想亲自玩？点右上角「退出旁观」回首页开房或加入</span>
+          </div>
+
           <!-- 游戏结束信息 -->
           <div v-if="gameState?.gameOverInfo" class="game-over-info">
             <h3>游戏结束</h3>
@@ -271,10 +312,10 @@
       <aside class="side-rail rail-right">
         <ChatPanel
           :roomId="roomId"
-          :playerId="playerId"
-          :playerName="playerName"
+          :playerId="spectatorId || playerId"
+          :playerName="spectatorName || playerName"
           :isHost="isHost"
-          :players="gameState?.players || {}"
+          :players="chatMembers"
         />
       </aside>
     </main>
@@ -343,6 +384,19 @@
       </div>
     </div>
 
+    <!-- 观战审批等待（仅旁观者，牌局进行中才会出现） -->
+    <div v-if="spectatorWaiting" class="spectate-waiting">
+      <div class="sw-card">
+        <div class="sw-spinner"></div>
+        <p class="sw-title">正在等待房主批准旁观…</p>
+        <p class="sw-sub">牌局正在进行，房主同意后即可进入（60 秒无响应自动取消）</p>
+        <button class="sw-cancel" type="button" @click="exitRoom">取消并返回首页</button>
+      </div>
+    </div>
+
+    <!-- 房主：游戏中收到的旁观申请 -->
+    <SpectatorAskModal :ask="pendingAsk" @respond="respondSpectator" />
+
   </div>
 </template>
 
@@ -356,6 +410,7 @@ import PublicCards from '@/components/PublicCards.vue';
 import PlayerHand from '@/components/PlayerHand.vue';
 import CandidateTable from '@/components/CandidateTable.vue';
 import ChatPanel from '@/components/ChatPanel.vue';
+import SpectatorAskModal from '@/components/SpectatorAskModal.vue';
 import type { Color, Card, ClientCommand } from '@/types/game';
 import { getColorClass, getColorValue, getPointFromNumber, getColorFromNumber } from '@/utils/game';
 import { useDeduction } from '@/composables/gameLogic';
@@ -369,6 +424,70 @@ const playerName = computed(() => String(route.query.playerName || 'Player'));
 const playerId = computed(() => `${roomId.value}_${playerName.value}`);
 // 房主身份以服务端 hostId 为准（手动填房号加入的第一人也是房主）
 const isHost = computed(() => !!gameState.value?.hostId && gameState.value.hostId === playerId.value);
+
+// ---------------------------------------------------------------- 旁观者
+// 旁观者复用参赛者界面（D1 视角代入）：把 store 的 myPlayerId 指向「代入的玩家」，
+// 手牌问号、线索、回合提示自然与真身一致；写操作由服务端统一拦截。
+const isSpectator = computed(() => String(route.query.spectate || '') === '1');
+// 从大厅等待界面跳过来时连接是复用的，身份只在 store 里，这里先认领回来
+const spectatorId = ref(isSpectator.value ? gameStore.spectatorId : '');
+const spectatorName = ref(isSpectator.value ? gameStore.spectatorName : '');
+const spectateViewId = ref(isSpectator.value ? gameStore.spectatorView : '');
+const spectatorWaiting = ref(false);
+const spectatorMuted = ref(false);
+const spectatorNotice = ref('');
+// 房主在游戏页收到的旁观申请（游戏期审批只可能落在游戏页）
+const pendingAsk = ref<{ playerId: string; playerName: string } | null>(null);
+let spectatorNoticeTimer: number | undefined;
+const showSpectatorNotice = (text: string, ms = 2800) => {
+  spectatorNotice.value = text;
+  if (spectatorNoticeTimer !== undefined) window.clearTimeout(spectatorNoticeTimer);
+  spectatorNoticeTimer = window.setTimeout(() => {
+    spectatorNotice.value = '';
+  }, ms);
+};
+
+const spectateOptions = computed(() => {
+  const st = gameState.value;
+  if (!st || !st.players) return [];
+  const ids = st.turnOrder && st.turnOrder.length ? st.turnOrder : Object.keys(st.players);
+  return ids.filter((id) => st.players[id]).map((id) => ({ playerId: id, playerName: st.players[id].playerName }));
+});
+
+const spectateViewName = computed(() => {
+  const st = gameState.value;
+  if (!st || !spectateViewId.value) return '';
+  return st.players?.[spectateViewId.value]?.playerName || '';
+});
+
+const setSpectateView = (target: string) => {
+  if (!isSpectator.value || !target || target === spectateViewId.value) return;
+  spectateViewId.value = target;
+  gameStore.setMyPlayerId(target);
+  wsService.send({ cmd: 'SpectateSetView', targetPlayerId: target } as ClientCommand);
+};
+
+/** 聊天/语音的成员表：参赛者 + 旁观者（语音成员列表里要能显示旁观者昵称） */
+const chatMembers = computed(() => {
+  const st = gameState.value;
+  const base: Record<string, { playerId: string; playerName: string; isBot?: boolean }> = {};
+  for (const [pid, p] of Object.entries(st?.players || {})) {
+    base[pid] = { playerId: pid, playerName: (p as any).playerName, isBot: !!(p as any).isBot };
+  }
+  for (const s of st?.spectators || []) {
+    if (!base[s.playerId]) {
+      base[s.playerId] = { playerId: s.playerId, playerName: s.playerName, isBot: false };
+    }
+  }
+  if (spectatorId.value && !base[spectatorId.value]) {
+    base[spectatorId.value] = {
+      playerId: spectatorId.value,
+      playerName: spectatorName.value || '旁观者',
+      isBot: false,
+    };
+  }
+  return base;
+});
 
 // 选中的公共牌
 const selectedPublicCard = ref<Card | null>(null);
@@ -483,9 +602,10 @@ const displayedPublicCards = computed(() => gameState.value?.publicCards || []);
 const deduction = useDeduction();
 const revealedCards = computed(() => deduction.revealedNumbers.value);
 
-// 猜测结果弹窗中是否显示猜测者本人的数字（只有本人可见）
+// 猜测结果弹窗中是否显示猜测者本人的数字（只有本人可见；旁观者按代入视角算）
 const showGuesses = computed(() => {
-  return guessResult.value?.playerId === playerId.value;
+  const me = isSpectator.value ? spectateViewId.value : playerId.value;
+  return guessResult.value?.playerId === me;
 });
 
 // 猜测数字按从小到大排序
@@ -500,7 +620,38 @@ const sortedCorrectNumbers = computed(() => {
 });
 
 // 退出房间
+// 分享本房：房间号夹在 URL 里，对方打开首页即自动预填
+const shareTip = ref('');
+let shareTipTimer: number | undefined;
+const showShareTip = (text: string) => {
+  shareTip.value = text;
+  if (shareTipTimer !== undefined) window.clearTimeout(shareTipTimer);
+  shareTipTimer = window.setTimeout(() => {
+    shareTip.value = '';
+  }, 3000);
+};
+const copyShareLink = async () => {
+  const url = `${window.location.origin}/?roomId=${roomId.value}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    showShareTip('分享链接已复制，发给好友即可进入本房');
+  } catch (err) {
+    showShareTip(`复制失败，请手动复制：${url}`);
+  }
+};
+
+/** 主动离开：先告诉服务端（不告诉的话会被当成「断线」，位置一直挂着等重连） */
 const exitRoom = () => {
+  const leaveCmd: ClientCommand = isSpectator.value
+    ? { cmd: 'SpectatorLeave' }
+    : { cmd: 'LeaveRoom' };
+  wsService.send(leaveCmd);
+  wsService.disconnect();
+  router.push('/');
+};
+
+/** 服务端已经把房间/人清掉了（解散、被踢、审批被拒），不必再发指令 */
+const exitRoomQuiet = () => {
   wsService.disconnect();
   router.push('/');
 };
@@ -510,6 +661,18 @@ const handleStateUpdate = (state: any) => {
   console.log('[GameRoom] State updated:', state);
   // 判定完成后关闭点数判定模式（选定牌保留到用户手动取消或判定完成）
   pointJudgeMode.value = false;
+  // 旁观者：代入的玩家中途退出时，跟服务端一起回退到仍在座的第一位玩家
+  if (isSpectator.value) {
+    const players = state?.players || {};
+    if (spectateViewId.value && !players[spectateViewId.value]) {
+      const order: string[] = state?.turnOrder || [];
+      const fallback = order.find((id) => players[id]) || Object.keys(players)[0];
+      if (fallback) {
+        spectateViewId.value = fallback;
+        gameStore.setMyPlayerId(fallback);
+      }
+    }
+  }
   // 新回合开始（抽牌阶段）时清空选牌
   const sp = String(state?.subPhase || '').toUpperCase();
   if (sp === 'DRAW_PHASE') {
@@ -524,6 +687,15 @@ const handleStateUpdate = (state: any) => {
     pointJudgeMode.value = false;
     if (dissolveTimer) clearInterval(dissolveTimer);
     dissolveTimer = null;
+    // 牌局还没开始：所有人先回等待界面。旁观者同样进大厅的等待视图（只读、
+    // 没有房主操作），不留在游戏主界面。连接不断开，直接复用。
+    if (isSpectator.value) {
+      router.replace({
+        path: '/lobby',
+        query: { roomId: roomId.value, playerName: playerName.value, spectate: '1' }
+      });
+      return;
+    }
     // 不断开 WebSocket，直接跳转 Lobby 复用连接
     router.push({
       path: '/lobby',
@@ -692,6 +864,85 @@ const handleCandidateSelect = (color: Color, num: number) => {
   console.log(`从备选区选择：${color} ${num}`);
 };
 
+/** 旁观者相关事件（审批 / 视角 / 禁言 / 只读拦截） */
+const handleSpectatorEvent = (event: string, payload: any) => {
+  if (event === 'Event_SpectateReady') {
+    spectatorWaiting.value = false;
+    spectatorMuted.value = !!payload?.muted;
+    spectatorId.value = payload?.playerId || '';
+    spectatorName.value = payload?.playerName || '';
+    const view = payload?.viewId || '';
+    if (view) {
+      spectateViewId.value = view;
+      gameStore.setMyPlayerId(view);
+    }
+    // 身份存进 store：跳到大厅的等待界面时连接是复用的，
+    // Event_SpectateReady 不会再发一次，得靠 store 带过去
+    gameStore.setSpectator(spectatorId.value, spectatorName.value, view);
+    showSpectatorNotice(
+      payload?.hidden ? '已以管理员身份隐身旁观（其他玩家看不到你）' : '已进入旁观模式',
+      3200
+    );
+    return;
+  }
+  if (event === 'Event_SpectatorWaiting') {
+    spectatorWaiting.value = true;
+    return;
+  }
+  if (event === 'Event_SpectatorAsk') {
+    pendingAsk.value = { playerId: payload?.playerId, playerName: payload?.playerName };
+    return;
+  }
+  if (event === 'Event_SpectatorRejected') {
+    spectatorWaiting.value = false;
+    if (payload?.reason === 'kicked') {
+      alert(payload?.text || '你已被房主移出旁观');
+    } else {
+      alert(payload?.text || payload?.reason || '无法旁观该房间');
+    }
+    exitRoomQuiet();
+    return;
+  }
+  if (event === 'Event_SpectateView') {
+    if (payload?.targetPlayerId) {
+      spectateViewId.value = payload.targetPlayerId;
+      gameStore.setMyPlayerId(payload.targetPlayerId);
+      showSpectatorNotice(`已切换到 ${payload.targetName || '该玩家'} 的视角`, 2000);
+    }
+    return;
+  }
+  if (event === 'Event_SpectatorMuted') {
+    spectatorMuted.value = !!payload?.muted;
+    showSpectatorNotice(payload?.muted ? '你已被房主禁言，暂时不能发言' : '房主已解除你的禁言');
+    return;
+  }
+  if (event === 'Event_SpectatorLeft') {
+    exitRoomQuiet();
+    return;
+  }
+  if (event === 'Event_ActionRejected') {
+    showSpectatorNotice(payload?.reason || '该操作不可用', 2000);
+  }
+};
+
+/** 房主在游戏页审批旁观申请 */
+const respondSpectator = (payload: { allow: boolean; allowChat: boolean; allowVoice: boolean }) => {
+  const ask = pendingAsk.value;
+  if (!ask) return;
+  wsService.send({
+    cmd: 'SpectatorRespond',
+    playerId: ask.playerId,
+    allow: payload.allow,
+    allowChat: payload.allowChat,
+    allowVoice: payload.allowVoice
+  } as ClientCommand);
+  showSpectatorNotice(
+    payload.allow ? `已允许 ${ask.playerName} 旁观` : `已拒绝 ${ask.playerName} 的旁观申请`,
+    2600
+  );
+  pendingAsk.value = null;
+};
+
 // 生命周期
 onMounted(() => {
   if (!route.query.roomId || !route.query.playerName) {
@@ -699,31 +950,40 @@ onMounted(() => {
     return;
   }
 
-  gameStore.setMyPlayerId(playerId.value);
-  
+  // 参赛者先认领自己；旁观者要等 Event_SpectateReady 带回「代入视角」后再设置 myPlayerId
+  if (!isSpectator.value) gameStore.setMyPlayerId(playerId.value);
+
   // 连接 WebSocket
   wsService.setStateUpdateCallback(handleStateUpdate);
   wsService.setGuessResultCallback(handleGuessResult);
   wsService.setDisconnectCallback(handleDisconnect);
   wsService.setGameOverCallback(handleGameOver);
+  wsService.setSpectatorEventCallback(handleSpectatorEvent);
+  wsService.setChatRejectedCallback((payload) => showSpectatorNotice(payload.reason, 2600));
   wsService.setRoomClosedCallback(() => {
     alert('房间已解散');
-    exitRoom();
+    exitRoomQuiet();
   });
   wsService.setFatalCallback((message: string) => {
     alert(message);
-    exitRoom();
+    exitRoomQuiet();
   });
-  
+
   if (wsService.getStatus() !== 'open') {
     // WS 地址跟随当前访问主机，支持局域网其他设备接入
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}?clientId=${getClientId()}`;
+    let wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${roomId.value}/${playerName.value}?clientId=${getClientId()}`;
+    if (isSpectator.value) {
+      wsUrl += '&spectate=1';
+      const adminToken = route.query.adminToken;
+      if (adminToken) wsUrl += `&adminToken=${encodeURIComponent(String(adminToken))}`;
+    }
     wsService.connectWithUrl(wsUrl);
   }
 });
 
 onUnmounted(() => {
   if (dissolveTimer) clearInterval(dissolveTimer);
+  if (spectatorNoticeTimer !== undefined) window.clearTimeout(spectatorNoticeTimer);
 });
 </script>
 
@@ -791,6 +1051,56 @@ onUnmounted(() => {
 }
 .reset-btn:hover {
   background: #e65100;
+}
+
+.share-btn {
+  background: #fff;
+  border: 1px solid #c7cbe6;
+  color: #4a4fa2;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.share-btn:hover {
+  background: #eef0ff;
+  border-color: #667eea;
+}
+
+.private-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #c2751b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.share-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  z-index: 60;
+  padding: 10px 18px;
+  border-radius: 10px;
+  background: rgba(30, 30, 46, 0.92);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.share-fade-enter-active,
+.share-fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+
+.share-fade-enter-from,
+.share-fade-leave-to {
+  opacity: 0;
 }
 
 /* 三栏：左空白（线索） | 中间原有游戏区 | 右空白（预留聊天室）
@@ -1567,6 +1877,13 @@ section + section {
     max-height: none;
   }
 
+  /* 聊天栏退化成整宽后仍然要有固定上下长度：消息多了在卡片内滚动，
+     否则整张卡片会被内容顶长、把页面越拉越高 */
+  .rail-right {
+    height: 520px;
+    max-height: 520px;
+  }
+
   .rail-card {
     min-height: 72px;
   }
@@ -1578,4 +1895,121 @@ section + section {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------- 旁观者 */
+.spectator-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4a4fa2;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.spectator-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 9px 28px;
+  background: linear-gradient(90deg, #eef2ff, #f7f2ff);
+  border-bottom: 1px solid #dfe3f5;
+  color: #4a4fa2;
+  font-size: 13px;
+}
+.sb-icon { font-size: 16px; }
+.sb-text b { color: #2f3380; }
+.sb-views { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.sb-views-label { font-size: 12px; color: #7a7fb5; }
+.sb-view-btn {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid #c9cdf0;
+  background: #fff;
+  color: #4a4fa2;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sb-view-btn:hover { border-color: #667eea; }
+.sb-view-btn.active { background: #667eea; border-color: #667eea; color: #fff; font-weight: 700; }
+
+.spectator-notice {
+  position: fixed;
+  left: 50%;
+  top: 96px;
+  transform: translateX(-50%);
+  z-index: 70;
+  padding: 9px 16px;
+  border-radius: 10px;
+  background: rgba(74, 79, 162, 0.95);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+/* 旁观者：整个操作区禁用交互（服务端另有 Event_ActionRejected 兜底） */
+.game-room.is-spectator .action-buttons {
+  pointer-events: none;
+  opacity: 0.45;
+  filter: grayscale(0.3);
+}
+
+.spectator-lock {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px dashed #b9c0ea;
+  border-radius: 10px;
+  background: #f5f6ff;
+  color: #4a4fa2;
+}
+.sl-icon { font-size: 18px; }
+.sl-text { font-size: 13px; font-weight: 700; }
+.sl-sub { font-size: 12px; color: #7a7fb5; }
+
+/* 观战审批等待遮罩 */
+.spectate-waiting {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 22, 40, 0.55);
+}
+.sw-card {
+  width: min(420px, 88vw);
+  padding: 28px 26px;
+  border-radius: 16px;
+  background: #fff;
+  text-align: center;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+.sw-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 14px;
+  border: 3px solid #e3e6f7;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: sw-spin 0.9s linear infinite;
+}
+@keyframes sw-spin {
+  to { transform: rotate(360deg); }
+}
+.sw-title { margin: 0 0 6px; font-size: 16px; color: #2f3380; font-weight: 700; }
+.sw-sub { margin: 0 0 18px; font-size: 13px; color: #7a7fb5; line-height: 1.6; }
+.sw-cancel {
+  padding: 9px 20px;
+  border-radius: 8px;
+  border: 1px solid #cfd4ef;
+  background: #fff;
+  color: #4a4fa2;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sw-cancel:hover { border-color: #667eea; }
 </style>
