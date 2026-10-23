@@ -10,5 +10,10 @@
   },
   "roomList": {
     "enabled": true
+  },
+  "access": {
+    "enabled": false,
+    "exemptLoopback": true,
+    "tokens": []
   }
 }

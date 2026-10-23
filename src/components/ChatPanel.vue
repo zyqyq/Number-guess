@@ -42,15 +42,17 @@
           </template>
         </div>
       </div>
+      <div v-if="chatDisabled" class="chat-locked">🔇 管理员已关闭本房间聊天，暂时只能查看</div>
       <div class="msg-input">
         <input
           v-model="draft"
           type="text"
           maxlength="300"
-          placeholder="说点什么…"
+          :disabled="chatDisabled"
+          :placeholder="chatDisabled ? '管理员已关闭本房间聊天' : '说点什么…'"
           @keydown.enter.prevent="send"
         />
-        <button type="button" :disabled="!draft.trim()" @click="send">发送</button>
+        <button type="button" :disabled="chatDisabled || !draft.trim()" @click="send">发送</button>
       </div>
       <transition name="toast">
         <div v-if="rejectTip" class="reject-tip">{{ rejectTip }}</div>
@@ -184,6 +186,8 @@ let rejectTimer: ReturnType<typeof setTimeout> | null = null;
 
 const onlineCount = computed(() => Object.keys(props.players || {}).length);
 const roomHostId = computed(() => gameStore.gameState?.hostId || '');
+// 管理员可单独关闭某个房间的聊天：输入框置灰，但不能影响语音与系统消息
+const chatDisabled = computed(() => !!gameStore.gameState?.chatDisabled);
 
 const fmtTime = (ts: number) => {
   const d = new Date(ts);
@@ -206,6 +210,7 @@ const showReject = (text: string) => {
 };
 
 const send = () => {
+  if (chatDisabled.value) return;
   const text = draft.value.trim();
   if (!text) return;
   wsService.send({ cmd: 'SendChat', text });
@@ -477,6 +482,23 @@ onBeforeUnmount(() => {
   padding: 8px;
   border-top: 1px solid #eef1f5;
   flex-shrink: 0;
+}
+
+/* 管理员关闭本房聊天时的常驻提示条 */
+.chat-locked {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: #fff7ed;
+  border-top: 1px solid #fed7aa;
+  color: #b45309;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.msg-input input:disabled {
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 .msg-input input {

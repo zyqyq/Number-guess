@@ -154,6 +154,8 @@ def _room_dict(room: Any, ref: float) -> dict:
         "aliveCount": sum(1 for p in room.players.values() if p.isAlive),
         # 房主是否把房间设为隐身（隐身房不出现在首页公开列表，管理员仍可见）
         "isPrivate": bool(getattr(room, "isPrivate", False)),
+        # 管理员是否关闭了该房间的聊天
+        "chatDisabled": bool(getattr(room, "chatDisabled", False)),
         "currentTurnPlayerId": room.currentTurnPlayerId,
         "players": players,
         "spectatorCount": len(spectators),
@@ -216,6 +218,7 @@ def build_snapshot(rooms: Dict[str, Any]) -> dict:
             "username": app_config.admin_username(),
             "room": app_config.admin_room(),
             "configPath": app_config.CONFIG_PATH,
+            "access": app_config.access_snapshot(),
             "ipBlacklist": [
                 {"ip": e.get("ip"), "addedAt": e.get("addedAt") or 0, "hits": int(e.get("hits") or 0)}
                 for e in app_config.ip_entries()
@@ -283,6 +286,15 @@ async def execute_command(rooms: Dict[str, Any], message: dict) -> bool:
         await game.admin_kick_player(room, player_id)
         return True
 
+    if cmd == "AdminSetChatDisabled":
+        if not room:
+            return False
+        raw = message.get("disabled")
+        if isinstance(raw, str):
+            raw = raw.strip().lower() in ("1", "true", "yes", "on")
+        await game.admin_set_chat_disabled(room, bool(raw))
+        return True
+
     # ------------------------------------------------------------ 安全设置
     if cmd == "AdminSetRoomListEnabled":
         raw = message.get("enabled")
@@ -294,6 +306,25 @@ async def execute_command(rooms: Dict[str, Any], message: dict) -> bool:
             if ok
             else f"切换首页房间列表失败：{detail}",
             "info" if ok else "warn",
+        )
+        return True
+
+    if cmd == "AdminSetAccessEnabled":
+        raw = message.get("enabled")
+        if isinstance(raw, str):
+            raw = raw.strip().lower() in ("1", "true", "yes", "on")
+        ok, detail = app_config.set_access_enabled(bool(raw))
+        term_registry.log_event(
+            f"管理员{detail}访问口令机制" if ok else f"切换访问口令机制失败：{detail}",
+            "warn" if raw else "info",
+        )
+        return True
+
+    if cmd == "AdminRemoveAccessToken":
+        ok, detail = app_config.remove_access_token(str(message.get("id") or ""))
+        term_registry.log_event(
+            f"管理员删除访问口令（{detail}）" if ok else f"删除访问口令失败：{detail}",
+            "warn" if ok else "info",
         )
         return True
 

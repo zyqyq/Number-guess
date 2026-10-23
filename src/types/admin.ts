@@ -48,6 +48,8 @@ export interface AdminRoom {
   playerCount: number;
   aliveCount: number;
   isPrivate?: boolean;
+  /** 管理员是否关闭了该房间的聊天 */
+  chatDisabled?: boolean;
   currentTurnPlayerId: string | null;
   players: AdminRoomPlayer[];
   spectatorCount?: number;
@@ -95,11 +97,30 @@ export interface AdminBannedWord {
   hits: number;
 }
 
+export interface AdminAccessToken {
+  id: string;
+  /** 脱敏后的口令（前 6 后 4），完整口令只在生成时返回一次 */
+  masked: string;
+  note: string;
+  createdAt: number;
+  expiresAt: number | null;
+  hits: number;
+  expired: boolean;
+}
+
+export interface AdminAccessControl {
+  enabled: boolean;
+  exemptLoopback: boolean;
+  tokens: AdminAccessToken[];
+}
+
 export interface AdminSecurity {
   localOnly: boolean;
   username: string;
   room: string;
   configPath: string;
+  /** 安全口令（进站口令）配置与口令列表 */
+  access?: AdminAccessControl;
   ipBlacklist: AdminBlacklistItem[];
   bannedWords: AdminBannedWord[];
 }

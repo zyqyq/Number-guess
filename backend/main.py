@@ -7,9 +7,10 @@ import random
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
@@ -142,6 +143,9 @@ class GameRoom:
         # 房间列表可见性：房主可把房间设为隐身，隐身房间不出现在首页公开列表
         # （管理后台走 /ws/admin 快照，仍能看到全部房间）
         self.isPrivate = False
+        # 管理员可单独关闭某个正在进行的房间的聊天（房内所有人，含旁观者），
+        # 只影响发言，不影响系统消息与语音通话
+        self.chatDisabled = False
         # ------------------------------------------------------------ 旁观者
         # 旁观者与参赛者分表存放：start_game / turnOrder / deal_initial_hands /
         # check_game_over 全都只看 players，旁观者天然不参与牌局计算。
@@ -357,6 +361,8 @@ class GameRoom:
             "isPrivate": self.isPrivate,
             # 旁观者列表（含各自代入的视角；管理员隐身旁观不在此列）
             "spectators": self.visible_spectators(),
+            # 管理员是否关闭了本房聊天（前端据此置灰输入框）
+            "chatDisabled": self.chatDisabled,
         }
 
     async def broadcast_state(self):
@@ -987,6 +993,13 @@ async def cmd_send_chat(room: GameRoom, player_id: str, text: Any):
         return
     raw = str(text or "").strip()
     if not raw:
+        return
+    # 管理员对单个房间的禁聊：优先级低于房主对旁观者的禁言（提示语区分开，
+    # 让被禁言者先看到「被房主禁言」，而不是笼统的「聊天已关闭」）
+    if room.chatDisabled:
+        await room.send_to_player(
+            player_id, "Event_ChatRejected", {"reason": "聊天功能已被管理员关闭"}
+        )
         return
     if len(raw) > CHAT_MAX_LEN:
         raw = raw[:CHAT_MAX_LEN]
@@ -1622,6 +1635,26 @@ async def admin_reset_room(room: GameRoom):
     await room.broadcast_state()
 
 
+async def admin_set_chat_disabled(room: GameRoom, disabled: bool):
+    """管理员开关单个房间的聊天。
+
+    只拦「真人发言」：系统消息（加入/离开/语音动态）与语音通话都不受影响，
+    否则房内会失去上下文，也看不出为什么发不出去。
+    """
+    room.chatDisabled = bool(disabled)
+    action = "关闭" if room.chatDisabled else "恢复"
+    term_registry.log_event(
+        f"管理员{action}房间 {room.roomId} 的聊天", "warn" if room.chatDisabled else "info"
+    )
+    text = (
+        "管理员已关闭本房间的聊天功能"
+        if room.chatDisabled
+        else "管理员已恢复本房间的聊天功能"
+    )
+    await room.broadcast_chat(system_chat(room, text))
+    await room.broadcast_state()
+
+
 async def admin_close_room(room: GameRoom, by: str = "管理员"):
     room.stop_bot_driver()
     rooms.pop(room.roomId, None)
@@ -1722,6 +1755,122 @@ async def startup_event():
     )
 
 
+# ---------------------------------------------------------------- 安全口令
+# 开启后除「管理后台 / 静态资源 / 回环地址（决策 D6）」外，进站一律需要口令。
+# 口令来自 URL 的 ?key=...（校验通过即种 7 天 Cookie 并从地址栏抹掉口令）
+# 或 access_key Cookie；WebSocket 握手同样校验（同源握手浏览器会自动带 Cookie）。
+
+ACCESS_COOKIE = "access_key"
+ACCESS_COOKIE_MAX_AGE = 7 * 24 * 3600
+_access_denied_log: Dict[str, float] = {}
+
+
+def _is_static_asset(path: str) -> bool:
+    """静态资源不校验：否则页面拿不到 JS/CSS/图标，连输口令的界面都渲染不出来。"""
+    if path.startswith("/assets/"):
+        return True
+    rel = path.lstrip("/")
+    if not rel or rel.endswith("index.html"):
+        return False
+    root = os.path.realpath(DIST_PATH)
+    candidate = os.path.realpath(os.path.join(root, rel))
+    if not candidate.startswith(root + os.sep):
+        return False
+    return os.path.isfile(candidate)
+
+
+def _access_exempt_path(path: str) -> bool:
+    """管理后台整条链路豁免——它自己有「仅本机开关 + 昵称房间号口令」两层。"""
+    return path == "/admin" or path.startswith("/admin/") or path.startswith("/api/admin")
+
+
+def access_allowed_ws(websocket: WebSocket) -> bool:
+    """WebSocket 握手校验：管理通道已在别处判定，这里只管游戏与在线登记。"""
+    if not app_config.access_enabled():
+        return True
+    if app_config.access_exempt_loopback() and admin_module.is_local_ws(websocket):
+        return True
+    if app_config.access_key_valid(websocket.cookies.get(ACCESS_COOKIE)):
+        return True
+    return app_config.access_key_valid(websocket.query_params.get("key"))
+
+
+def _access_denied_page(reason: str = "") -> str:
+    hint = f"<p class=\"reason\">{reason}</p>" if reason else ""
+    return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>403 · 需要访问口令</title>
+<style>body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#f2f4f8;font-family:-apple-system,"PingFang SC",sans-serif;color:#334155}}
+.card{{background:#fff;padding:36px 40px;border-radius:16px;box-shadow:0 12px 40px rgba(15,23,42,.10);
+max-width:520px;width:calc(100% - 48px)}}h1{{margin:0 0 10px;font-size:20px;color:#0f172a}}
+p{{margin:8px 0;line-height:1.7;font-size:13.5px;color:#64748b}}
+.reason{{color:#dc2626}}code{{background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#0f172a}}
+form{{display:flex;gap:8px;margin-top:18px}}input{{flex:1;min-width:0;padding:9px 12px;border:1px solid #d8dee9;
+border-radius:8px;font-size:14px;outline:none}}input:focus{{border-color:#667eea}}
+button{{padding:9px 18px;border:0;border-radius:8px;background:linear-gradient(45deg,#667eea,#764ba2);
+color:#fff;font-size:14px;cursor:pointer}}</style></head><body><div class="card">
+<h1>需要访问口令</h1>
+{hint}
+<p>本服务已开启访问口令。请使用管理员提供的<b>带口令的完整链接</b>打开，或在此输入口令。</p>
+<form method="get"><input name="key" type="text" placeholder="粘贴访问口令" autocomplete="off" autofocus>
+<button type="submit">进入</button></form>
+<p>一次验证通过后，本设备 <b>7 天</b>内无需再输。口令在管理后台「安全设置 → 访问口令」生成；
+在服务器本机（<code>127.0.0.1</code>）访问默认不需要口令。</p>
+</div></body></html>"""
+
+
+@app.middleware("http")
+async def access_guard(request: Request, call_next):
+    if not app_config.access_enabled():
+        return await call_next(request)
+
+    path = request.url.path
+    if _access_exempt_path(path) or _is_static_asset(path):
+        return await call_next(request)
+    if app_config.access_exempt_loopback() and admin_module.is_local_request(request):
+        return await call_next(request)
+    # 已持有有效 Cookie：放行，且不重复计入命中次数
+    if app_config.access_key_valid(request.cookies.get(ACCESS_COOKIE)):
+        return await call_next(request)
+
+    raw_key = (request.query_params.get("key") or "").strip()
+    if raw_key and app_config.access_key_valid(raw_key, record=True):
+        # 校验通过即换发 Cookie，并把 URL 里的口令抹掉：避免口令留在地址栏、
+        # 浏览历史与 Referer 里，也免得前端把 ?key= 当成业务参数解析
+        pairs = [(k, v) for k, v in request.query_params.multi_items() if k != "key"]
+        location = path + (f"?{urlencode(pairs)}" if pairs else "")
+        response = RedirectResponse(location, status_code=302)
+        response.set_cookie(
+            ACCESS_COOKIE,
+            raw_key,
+            max_age=ACCESS_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        return response
+
+    ip = app_config.normalize_ip(request.client.host if request.client else "")
+    now = time.time()
+    if now - _access_denied_log.get(ip, 0.0) > 60:
+        _access_denied_log[ip] = now
+        if not raw_key:
+            term_registry.log_event(f"未携带访问口令被拦（{ip}，{path}）", "info")
+        if raw_key:
+            term_registry.log_event(f"访问口令无效（{ip}）", "warn")
+
+    if path.startswith("/api/"):
+        return JSONResponse(
+            {"detail": "需要访问口令", "reason": "access_denied"}, status_code=403
+        )
+    reason = "口令无效或已过期" if raw_key else ""
+    return HTMLResponse(
+        _access_denied_page(reason), status_code=403, headers={"Cache-Control": "no-store"}
+    )
+
+
 # ---------------------------------------------------------------- API 路由
 # 注意：这些路由必须注册在 SPA 兜底路由 /{path:path} 之前，否则会被 index.html 抢走。
 
@@ -1817,6 +1966,12 @@ async def presence_endpoint(websocket: WebSocket, client_id: str):
         await websocket.send_json({"error": "你的 IP 已被禁止连入"})
         await websocket.close(code=1008, reason="ip_banned")
         return
+    # 第二道闸：安全口令（黑名单优先于口令，见 §8.4 优先级）
+    if not access_allowed_ws(websocket):
+        term_registry.log_event(f"拒绝无口令的在线登记（{ip}）", "warn")
+        await websocket.send_json({"error": "需要访问口令"})
+        await websocket.close(code=1008, reason="access_denied")
+        return
     user_agent = websocket.headers.get("user-agent", "")
     term_registry.get_or_create(client_id, ip, user_agent, "guest")
     term_registry.attach_socket(client_id, websocket, "presence")
@@ -1908,6 +2063,35 @@ async def admin_endpoint(websocket: WebSocket):
                         "event": "Event_AdminSpectateToken",
                         "payload": {"roomId": target.roomId, "token": token},
                     }
+                )
+                continue
+            if message.get("cmd") == "AdminAddAccessToken":
+                raw_days = message.get("days")
+                try:
+                    days = float(raw_days) if raw_days not in (None, "", 0) else None
+                except (TypeError, ValueError):
+                    days = None
+                saved, entry = app_config.add_access_token(
+                    str(message.get("note") or ""), days
+                )
+                term_registry.log_event(
+                    "管理员生成访问口令"
+                    if saved
+                    else "生成访问口令（仅内存生效，写入 config.json 失败）",
+                    "warn",
+                )
+                await websocket.send_json(
+                    {
+                        "event": "Event_AdminAccessToken",
+                        "payload": {
+                            "token": entry["token"],
+                            "note": entry["note"],
+                            "expiresAt": entry["expiresAt"],
+                        },
+                    }
+                )
+                await websocket.send_json(
+                    {"event": "Event_AdminSnapshot", "payload": admin_module.build_snapshot(rooms)}
                 )
                 continue
             changed = await admin_module.execute_command(rooms, message)
@@ -2010,6 +2194,13 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, player_name: st
         term_registry.log_event(f"拒绝黑名单连入（{ip}，命中 {banned}）", "warn")
         await websocket.send_json({"error": "你的 IP 已被禁止连入"})
         await websocket.close(code=1008, reason="ip_banned")
+        return
+
+    # 第二道闸：安全口令（黑名单优先于口令）
+    if not access_allowed_ws(websocket):
+        term_registry.log_event(f"拒绝无口令的游戏连接（{ip}，房间 {room_id}）", "warn")
+        await websocket.send_json({"error": "需要访问口令"})
+        await websocket.close(code=1008, reason="access_denied")
         return
 
     player_id = f"{room_id}_{player_name}"

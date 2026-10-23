@@ -25,6 +25,7 @@
           </div>
           <div class="room-badges">
             <span v-if="room.isPrivate" class="private-badge" title="隐身房间不出现在首页列表">🔒 隐身</span>
+            <span v-if="room.chatDisabled" class="chat-off-badge" title="管理员已关闭该房间聊天">🔇 禁聊</span>
             <span class="phase-badge">{{ phaseLabel(room.gamePhase) }}</span>
           </div>
         </header>
@@ -68,6 +69,14 @@
             <button class="ghost-btn" title="以管理员身份隐身进入该房间观看（不发言、不进语音）" @click="spectateRoom(room)">
               隐身旁观
             </button>
+            <button
+              class="ghost-btn"
+              :class="{ 'chat-off-btn': room.chatDisabled }"
+              :title="room.chatDisabled ? '恢复该房间的文字聊天' : '禁止该房间所有人发言（系统消息与语音通话不受影响）'"
+              @click="toggleChat(room)"
+            >
+              {{ room.chatDisabled ? '恢复聊天' : '禁止聊天' }}
+            </button>
             <button class="ghost-btn" @click="act('AdminResetRoom', room)">重置牌局</button>
             <button class="danger-btn" @click="closeRoom(room)">关闭房间</button>
           </div>
@@ -85,7 +94,7 @@ import { fmtDateTime, fmtDuration, phaseLabel, subPhaseLabel } from '@/utils/adm
 const props = defineProps<{ rooms: AdminRoom[] }>();
 
 const emit = defineEmits<{
-  (e: 'action', payload: { cmd: string; roomId: string; playerId?: string }): void;
+  (e: 'action', payload: { cmd: string; roomId: string; playerId?: string; disabled?: boolean }): void;
 }>();
 
 const counts = computed(() => ({
@@ -111,6 +120,15 @@ const kickPlayer = (room: AdminRoom, player: AdminRoomPlayer) => {
 /** 隐身旁观：由 AdminPage 签发一次性凭证后在新标签打开旁观窗口 */
 const spectateRoom = (room: AdminRoom) => {
   emit('action', { cmd: 'AdminSpectate', roomId: room.roomId });
+};
+
+/** 管理员开关单个房间的聊天（只拦真人发言，系统消息与语音不受影响） */
+const toggleChat = (room: AdminRoom) => {
+  emit('action', {
+    cmd: 'AdminSetChatDisabled',
+    roomId: room.roomId,
+    disabled: !room.chatDisabled,
+  });
 };
 </script>
 
@@ -394,6 +412,7 @@ const spectateRoom = (room: AdminRoom) => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
   padding-top: 10px;
   border-top: 1px dashed var(--admin-border);
 }
@@ -405,10 +424,14 @@ const spectateRoom = (room: AdminRoom) => {
 
 .action-group {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+  margin-left: auto;
 }
 
 .ghost-btn {
+  white-space: nowrap;
   padding: 6px 12px;
   font-size: 12px;
   color: #334155;
@@ -425,6 +448,7 @@ const spectateRoom = (room: AdminRoom) => {
 }
 
 .danger-btn {
+  white-space: nowrap;
   padding: 6px 12px;
   font-size: 12px;
   color: #b91c1c;
@@ -459,5 +483,26 @@ const spectateRoom = (room: AdminRoom) => {
   color: #6d28d9;
   background: #f3e8ff;
   border: 1px solid #ddd6fe;
+}
+
+/* 管理员禁聊徽标 / 切换按钮 */
+.chat-off-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chat-off-btn {
+  color: #b45309;
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.chat-off-btn:hover {
+  background: #ffedd5;
 }
 </style>

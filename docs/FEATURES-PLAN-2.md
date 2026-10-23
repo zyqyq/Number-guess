@@ -263,6 +263,9 @@ self.is_private = False                        # 房主隐身开关（功能 4 �
 > **实施状态（2026-10-22 更新）**：**P1 已完成**——房间列表（`/api/rooms` 过滤与扩展字段）、房主隐身（`SetRoomPrivacy`）、房间列表总开关（`AdminSetRoomListEnabled`）、分享链接（含 `?room=` 别名与「换个房间」）。验证：协议 27/27、UI 28/28、聊天回归 33/33、牌局回归 10/10。
 > **P1 后续微调（2026-10-22 23:3x）**：房主操作区「🤖 添加机器人」与「🔒 房间隐身」改为同一行各占一半宽度，隐身的说明文字改为 hover/focus 浮出提示，已隐身时按钮文案为「🔓 解除房间隐身」；房间列表只保留紧凑列表，管理员改为开启/关闭总开关。
 > **P0 暂缓**：因排期调整，帮助文档与 `/help` 页的代码改动已全部回退，本文件保留原设计方案（§3），恢复时按 §3 重新实施即可。
+> **P3 已完成（2026-10-23 夜）**：管理员禁聊。`GameRoom.chatDisabled` + `state.chatDisabled`；`cmd_send_chat` 在「房主禁言」之后判断禁聊（提示语区分），仅拦真人发言，系统消息与语音不受影响；管理指令 `AdminSetChatDisabled{roomId, disabled}`，开关时房内广播系统消息并推快照；管理快照与 `/api/rooms` 均带 `chatDisabled`；`AdminRooms.vue` 房间卡片加「禁止聊天 / 恢复聊天」按钮与「🔇 禁聊」徽标，`ChatPanel.vue` 输入框置灰 + 常驻提示条。
+> **P4 已完成（2026-10-23 夜）**：安全口令。`config.json` 新增 `access` 段（`enabled` / `exemptLoopback` / `tokens`，条目带 `id` 便于删除）；`app.middleware("http")` 统一守卫首页与 SPA 兜底、`/api/rooms`、`/api/banned-words`，豁免静态资源、`/admin` 与 `/api/admin/*`、回环地址（D6）；`?key=` 校验通过后 302 抹掉口令并种 7 天 `HttpOnly` Cookie；两个 WS 端点（游戏 / presence）在 IP 黑名单之后校验，失败 `1008 access_denied`；管理面板新增「访问口令」（开关、生成、脱敏表格、使用次数、删除、一次性完整口令回显 + 复制），`AdminSetAccessEnabled` / `AdminAddAccessToken` / `AdminRemoveAccessToken`。
+> - 验证：协议层 `/tmp/test_p3p4.py` **38/38**（含以非回环地址 192.168.2.2 模拟外部设备：403 页、API JSON、口令链接换 Cookie、静态资源豁免、本机豁免、管理后台豁免、WS 1008、Cookie 握手、删除即失效、过期口令单测）；UI 层 `/tmp/test_p3p4_ui.py` **31/31**（禁聊徽标与按钮、输入框置灰与系统消息、恢复后可发言、口令生成/脱敏/复制/开关/删除）；回归全部通过（`test_chat.py` 33、`test_regression.py` 10、`test_rooms_p1.py` 28、`test_spectator.py` 43、`test_fixes.py` 21、`test_p1_ui.py` 41、`test_spectator_ui.py` 30、`test_fixes_ui.py` 29、`test_tooltip.py` 11、`test_admin_spectate_ui.py` 12）。
 > **P2 已完成（2026-10-23）**：旁观者模式全链路落地（P2a + P2b + P2c 一次做完）。
 > - 数据模型：`spectators` / `spectator_conns` 与 `players` / `ws_connections` 完全分离，牌局逻辑（`start_game` / `turnOrder` / `deal_initial_hands` / `check_game_over`）无需任何改动；新增 `spectatorView` / `spectatorMuted` / `spectatorVoiceBanned` / `spectatorHidden` / `spectatorPending`。
 > - 接入：`/ws/{room}/{name}?spectate=1`（+`adminToken`）；`WAITING`/`GAME_OVER` 直接进，`PLAYING` 走房主审批（`Event_SpectatorAsk` → `SpectatorRespond`，60 秒超时自动拒绝，等待期间轮询 `client_state` 以撤销断开客户端的幽灵申请）。
@@ -307,14 +310,11 @@ self.is_private = False                        # 房主隐身开关（功能 4 �
 
 ## 13. 下一步
 
-§12 决策点已确认。**P1 已完成**（房间列表 + 隐身 + 分享），**P2 已完成**（旁观者模式：视角代入、房主审批/禁言/踢出、管理员隐身旁观），并已按实测反馈打完 P2 补丁：
+§12 决策点已确认，六个功能中除 **P0（帮助文档 + 帮助页，已按排期暂缓并回退）** 外全部落地：
 
-- 未开局的房间，旁观者先落在**大厅等待界面**（只读、无房主操作），开局后自动切观战页；
-- 首页「加入房间」右侧加小箭头，纵向展开「👁 旁观加入」，支持用房间号直接旁观；
-- `LeaveRoom` 区分「主动退出 / 断线」：退出即时清占位，断线保留重连并在等人阶段 45 秒后回收；
-- 修复房主解散只断连接不通知服务端导致的「房间残留在列表 / 管理后台」「同号重开继承上一局聊天」；
-- 聊天卡片改为固定高度、消息在卡片内滚动（大厅与游戏页宽屏/窄屏三种布局都覆盖）。
+- **P1**：房间列表（`/api/rooms`）、房主隐身（`SetRoomPrivacy`）、列表总开关（`AdminSetRoomListEnabled`）、URL 分享（含 `?room=` 别名）；
+- **P2**：旁观者模式（视角代入、房主审批 / 禁言 / 踢出、未开局先看等待界面、管理员隐身旁观）；
+- **P3**：管理员禁止指定房间聊天（`AdminSetChatDisabled` + 输入框置灰 + 管理卡片徽标）；
+- **P4**：安全口令（`access` 配置段 + HTTP 中间件 + WS 握手校验 + 403 口令页 + 管理面板）。
 
-下一批次为 **P3：管理员禁止指定房间聊天**（`chatDisabled` 字段已预留在 `/api/rooms` 与管理快照里）。
-
-P0（帮助文档 + 帮助页）已暂缓、代码回退，需要时按 §3 重新实施；帮助页截图届时从运行实例采集（`spectate` 相关界面已可实拍）。
+后续可选项：P0 帮助页按 §3 重新实施（截图从运行实例采集，`spectate` / 禁聊 / 口令页均已可实拍）；口令面板可再加「批量禁用 / 续期」；禁聊可细化为「只禁旁观者发言」等更细粒度开关。

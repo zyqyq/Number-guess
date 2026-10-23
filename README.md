@@ -93,7 +93,8 @@
 - **IP 黑名单**：`config.json` 的 `security.ipBlacklist`，支持单个 IP 与 CIDR 网段（如 `10.0.0.0/8`）。命中黑名单的来源，游戏连接、presence 登记、管理接口与管理 WebSocket 全部拒绝（关闭码 `1008 / ip_banned`），优先级高于仅本机开关；命中次数会记入配置并展示在「安全设置」页。
 - **违禁词库**：`config.json` 的 `security.bannedWords`。昵称在 WebSocket 握手时校验，命中即拒绝（`1008 / banned_nickname`）并在事件流记录命中词；首页输入昵称时会按 `/api/banned-words` 做本地预检提示（只作体验优化，真正拦截在后端）。文字聊天使用同一套词库（见 2.7）。
 - **连入终端**：一行一台终端，显示昵称、IP、类型（玩家 / 访客 / 管理端）、房间号、连入时间（东八区）、在线时长，支持按状态筛选与关键字搜索。「强制断开」会让对方收到 `4001` 关闭码并回到首页；管理端自身连接不可被断开。
-- **房间管理**：以卡片展示每个房间的状态、轮次、时长、存活人数、阶段与成员（房主 / 机器人 / 离线 / 当前回合标记）；房主设了隐身的房间带「🔒 隐身」徽标（隐身只影响首页公开列表，管理员始终可见）。可执行「重置牌局」（回到等待阶段，玩家自动退回大厅）、「关闭房间」（断开房内所有连接）、「移出玩家」（对方收到 `4001` 关闭码并回到首页）。
+- **房间管理**：以卡片展示每个房间的状态、轮次、时长、存活人数、阶段与成员（房主 / 机器人 / 离线 / 当前回合标记）；房主设了隐身的房间带「🔒 隐身」徽标（隐身只影响首页公开列表，管理员始终可见）。可执行「重置牌局」（回到等待阶段，玩家自动退回大厅）、「关闭房间」（断开房内所有连接）、「移出玩家」（对方收到 `4001` 关闭码并回到首页）、「禁止聊天 / 恢复聊天」（见 2.10）。
+- **访问口令**：管理后台「安全设置 → 访问口令」可整体开启进站口令，并在线生成 / 删除口令（详见 2.10）。
 - **系统管理**：进程运行时长、在线终端数、房间数、峰值内存、Python / FastAPI 版本、1/5/15 分钟负载、磁盘占用进度条，以及最近 120 条服务端事件（连接、建房、管理员操作等）。页内可开关**首页房间列表**（开启 / 关闭，写入 `config.json` 的 `roomList.enabled`）。
 - 数据每 2 秒由管理端 WebSocket 全量推送一次；面板上的时间统一按东八区渲染。安全设置子页可在线维护黑名单与违禁词，改动即时写回 `config.json` 并热生效。
 
@@ -130,6 +131,25 @@
 - **房主管控**：大厅「旁观者」分区列出全部旁观者，房主可就地「禁言 / 解除禁言」「踢出」（`MuteSpectator` / `KickSpectator`，踢出时以 4001 断开）。这些操作不进入牌局逻辑。
 - **管理员隐身旁观**：管理后台房间卡片新增「隐身旁观」按钮，点后签发**一次性、120 秒有效**的 `adminToken` 并在新标签打开旁观窗口。隐身旁观对其他玩家完全不可见（不出现于 `state.spectators`）、默认禁言禁语音，只有管理快照能看到并标记 `hidden`。
 - **生命周期**：旁观者主动「退出旁观」（`SpectatorLeave`）或断线都会从列表移除并广播系统消息（隐身者除外）；牌局重置保留旁观者与聊天记录，仅纠正失效的代入视角；房间解散时旁观者与参赛者一起收到 `Event_RoomClosed` 并断开。
+
+### 2.10 管理员禁聊与访问口令
+
+**管理员禁止指定房间聊天（`AdminSetChatDisabled`）**
+
+- **入口**：管理后台「房间管理」每张房间卡片底部有「禁止聊天 / 恢复聊天」按钮（`disabled` 布尔随指令下发），禁用后卡片头部出现「🔇 禁聊」徽标，房内所有人（含旁观者）都发不出去。
+- **只拦真人发言**：系统消息（加入 / 离开 / 重连 / 语音动态）与语音通话完全不受影响，否则房内会失去上下文、也看不出为什么发不出去。开关时会在房内广播一条系统消息说明原因，前端聊天输入框同步置灰并显示「🔇 管理员已关闭本房间聊天，暂时只能查看」。
+- **提示语有优先级**：房主对旁观者的禁言判断在前——被禁言者看到「你已被房主禁言」，其他人看到「聊天功能已被管理员关闭」，两种原因不会互相掩盖。
+- **状态同步**：`state.chatDisabled` 随每次快照下发，`/api/rooms` 与管理快照都带该字段（首页列表可用于展示，管理端用于显示徽标）。房间重置、牌局结束都不清除该标记，只有管理员点「恢复聊天」或房间被关闭才复位。
+
+**安全口令（访问口令，进站闸门）**
+
+- **模型**：`config.json` 的 `access` 段——`enabled`（总开关，默认 `false`）、`exemptLoopback`（本机豁免，默认 `true`，即决策 D6）、`tokens` 列表（每条形如 `{id, token, note, createdAt, expiresAt, hits}`，`expiresAt` 为 `null` 表示永不过期）。
+- **校验范围**：除豁免项外全部路径——首页与所有 SPA 兜底路由、`/api/*`（含 `/api/rooms`、`/api/banned-words`、`/api/health`）、`/ws/{room}/{name}` 与 `/ws/presence/{id}`。**豁免**：`/assets/*` 等静态资源（否则页面加载不出来）、`/admin` 与 `/api/admin/*`（它们自己有「仅本机 + 昵称房间号」两层）、以及回环地址 `127.0.0.1` / `::1`。
+- **首次访问**：用 `https://<主机>/?key=<口令>` 打开，服务端校验通过后 302 到去掉 `key` 的同一地址，并种下 `access_key` Cookie（`HttpOnly`、`SameSite=Strict`、7 天、HTTPS 下带 `Secure`）。之后同设备直接用即可；URL 里的口令不会残留到地址栏、浏览历史或 Referer。
+- **被拦住时**：非 API 请求返回 403 说明页（带「粘贴访问口令」输入框，可直接在手机上输入），API 请求返回 `403 {"detail":"需要访问口令","reason":"access_denied"}`。WebSocket 握手失败以 `1008 / access_denied` 关闭，并先推一条 `{"error":"需要访问口令"}` 方便前端提示。
+- **管理面板**：总开关 + 「生成口令」（备注 + 有效期天数，空 = 永久）+ 口令表格（脱敏显示 `前6…后4`、备注、创建时间、过期时间、使用次数、删除）。完整口令只在生成时回显一次，可一键复制口令或复制整条链接；`hits` 记录「用口令链接进站」的次数（Cookie 续期不重复计）。
+- **优先级**：IP 黑名单 > 安全口令 > 仅本机开关。黑名单命中直接 `1008 / ip_banned`，安全口令连人都进不来，管理后台层级不变。
+- **运维提醒**：开启前先生成至少一条口令，否则外部设备会被挡在门外；本机 `127.0.0.1` 默认豁免，管理员不会被自己锁住。若走 HTTP（无 HTTPS），口令明文传输，仅建议在可信内网临时使用。
 
 ## 3. 程序配置与启动
 
@@ -262,7 +282,7 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 | `/ws/presence/{clientId}` | 欢迎页在线登记，填充管理后台的终端列表 | IP 黑名单命中即拒 |
 | `/ws/admin?clientId=…` | 管理后台：首帧 `AdminAuth` 校验口令，之后每 2 秒推送 `Event_AdminSnapshot` | `localOnly` 开关 + IP 黑名单 + 口令 |
 
-管理指令（同一条管理连接上发送）：`AdminKickTerminal`、`AdminResetRoom`、`AdminCloseRoom`、`AdminKickPlayer`、`AdminSetRoomListEnabled`（`enabled` 布尔）、`AdminReloadConfig`、`AdminAddIp` / `AdminRemoveIp`、`AdminAddWord` / `AdminRemoveWord`。
+管理指令（同一条管理连接上发送）：`AdminKickTerminal`、`AdminResetRoom`、`AdminCloseRoom`、`AdminKickPlayer`、`AdminSetChatDisabled`（`disabled` 布尔，单房间禁聊）、`AdminSetRoomListEnabled`（`enabled` 布尔）、`AdminSetAccessEnabled`（`enabled` 布尔，访问口令总开关）、`AdminAddAccessToken`（`note` / `days`，回 `Event_AdminAccessToken`）、`AdminRemoveAccessToken`（`id`）、`AdminReloadConfig`、`AdminAddIp` / `AdminRemoveIp`、`AdminAddWord` / `AdminRemoveWord`。
 
 ### 4.4 断线处理
 

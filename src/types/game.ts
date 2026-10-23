@@ -95,6 +95,8 @@ export interface GameState {
   isPrivate?: boolean;
   /** 房间内旁观者列表 */
   spectators?: SpectatorInfo[];
+  /** 管理员是否关闭了本房间的聊天（只影响发言，系统消息照常） */
+  chatDisabled?: boolean;
 }
 
 /** 一条聊天消息；system 为 true 时是加入/离开/语音动态等系统提示 */

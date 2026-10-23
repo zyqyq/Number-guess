@@ -83,11 +83,16 @@
           <AdminSecurity
             v-else-if="tab === 'security'"
             :security="snapshot.security"
+            :revealed-token="revealedToken"
             @add-ip="(ip: string) => send({ cmd: 'AdminAddIp', ip })"
             @remove-ip="(ip: string) => send({ cmd: 'AdminRemoveIp', ip })"
             @add-word="(word: string) => send({ cmd: 'AdminAddWord', word })"
             @remove-word="(word: string) => send({ cmd: 'AdminRemoveWord', word })"
             @reload-config="handleReloadConfig"
+            @set-access-enabled="(enabled: boolean) => send({ cmd: 'AdminSetAccessEnabled', enabled })"
+            @add-access-token="(payload: { note: string; days: number | null }) => send({ cmd: 'AdminAddAccessToken', note: payload.note, days: payload.days })"
+            @remove-access-token="(id: string) => send({ cmd: 'AdminRemoveAccessToken', id })"
+            @dismiss-token="revealedToken = null"
           />
           <AdminSystem
             v-else
@@ -131,11 +136,17 @@ const snapshot = ref<AdminSnapshot | null>(null);
 const tab = ref<TabKey>('terminals');
 const connected = ref(false);
 const notice = ref('');
+// 刚生成的安全口令（完整值只显示这一次，关掉即丢失）
+const revealedToken = ref<{ token: string; note?: string; expiresAt?: number | null } | null>(null);
 const currentOrigin = `${window.location.origin}/admin`;
 
 const securityCount = computed(() => {
   const s = snapshot.value?.security;
-  return (s?.ipBlacklist.length ?? 0) + (s?.bannedWords.length ?? 0);
+  return (
+    (s?.ipBlacklist.length ?? 0) +
+    (s?.bannedWords.length ?? 0) +
+    (s?.access?.tokens.length ?? 0)
+  );
 });
 
 let socket: WebSocket | null = null;
@@ -199,6 +210,10 @@ const connectAdminSocket = () => {
       disposeSocket();
     } else if (data.event === 'Event_AdminSpectateToken') {
       openSpectateWindow(data.payload || {});
+    } else if (data.event === 'Event_AdminAccessToken') {
+      // 完整口令只在生成这一次下发，弹回显区让管理员立即复制
+      revealedToken.value = data.payload || null;
+      showNotice('已生成访问口令，请立即复制保存');
     }
   };
 
@@ -274,7 +289,12 @@ const openSpectateWindow = (payload: { roomId?: string; token?: string }) => {
   }
 };
 
-const handleRoomAction = (payload: { cmd: string; roomId: string; playerId?: string }) => {
+const handleRoomAction = (payload: {
+  cmd: string;
+  roomId: string;
+  playerId?: string;
+  disabled?: boolean;
+}) => {
   if (payload.cmd === 'AdminSpectate') {
     // 必须在点击的同步阶段先占一个标签，异步回调里的 window.open 会被浏览器拦掉
     spectateWindow = window.open('about:blank', '_blank');
@@ -287,6 +307,7 @@ const handleRoomAction = (payload: { cmd: string; roomId: string; playerId?: str
     AdminResetRoom: `已重置房间 ${payload.roomId}`,
     AdminCloseRoom: `已关闭房间 ${payload.roomId}`,
     AdminKickPlayer: `已将该玩家移出房间 ${payload.roomId}`,
+    AdminSetChatDisabled: `已切换房间 ${payload.roomId} 的聊天开关`,
   };
   showNotice(labels[payload.cmd] || '指令已发送');
 };
